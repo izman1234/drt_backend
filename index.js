@@ -419,7 +419,7 @@ log.info('Server is ready. Press Ctrl+C to stop.');
 if (process.pkg && !process.argv.includes('--no-update')) {
   const forceUpdate = process.argv.includes('--check-updates');
   setTimeout(() => {
-    require('./updater').checkForUpdates(forceUpdate).catch(() => {});
+    require('./updater').checkForUpdates(forceUpdate, { shutdownFn: shutdownServer }).catch(() => {});
   }, 3000);
 }
 

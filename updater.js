@@ -213,7 +213,7 @@ function canWriteToDir(dir) {
 // ═══════════════════════════════════════════════════════════════════════
 //  CHECK FOR UPDATES  (called from server startup)
 // ═══════════════════════════════════════════════════════════════════════
-async function checkForUpdates(force = false) {
+async function checkForUpdates(force = false, { shutdownFn } = {}) {
   if (!process.pkg) {
     if (force) {
       log.info('Update check: running in development mode — auto-update not available.');
@@ -287,7 +287,7 @@ async function checkForUpdates(force = false) {
       return;
     }
 
-    await downloadAndApply(latestVersion, exeAsset, checksumAsset);
+    await downloadAndApply(latestVersion, exeAsset, checksumAsset, shutdownFn);
 
   } catch (err) {
     // Non-fatal — server keeps running
@@ -298,7 +298,7 @@ async function checkForUpdates(force = false) {
 // ═══════════════════════════════════════════════════════════════════════
 //  DOWNLOAD, VERIFY & TRIGGER SELF-UPDATE
 // ═══════════════════════════════════════════════════════════════════════
-async function downloadAndApply(version, exeAsset, checksumAsset) {
+async function downloadAndApply(version, exeAsset, checksumAsset, shutdownFn) {
   const os      = require('os');
   const tempDir = path.join(os.tmpdir(), 'drt-update', version);
   const newExe  = path.join(tempDir, 'DRT Server.new.exe');
@@ -365,16 +365,18 @@ async function downloadAndApply(version, exeAsset, checksumAsset) {
   log.info('Launching updater helper and restarting...');
 
   // Gracefully close the server so the port is released before restart
-  try {
-    const { shutdownServer } = require('./index');
-    if (shutdownServer) {
+  if (typeof shutdownFn === 'function') {
+    try {
       log.info('Closing server connections...');
-      await shutdownServer();
+      await shutdownFn();
       // Give OS a moment to fully release the port
       await sleep(1000);
+      log.info('Server connections closed.');
+    } catch (err) {
+      log.warn('Could not gracefully shut down server:', err.message);
     }
-  } catch (err) {
-    log.warn('Could not gracefully shut down server:', err.message);
+  } else {
+    log.warn('No shutdown function provided — port may linger briefly');
   }
 
   const child = require('child_process').spawn(helperPath, helperArgs, {
