@@ -22,15 +22,12 @@ jobs:
           node-version: 20
 
       - name: Install backend dependencies
-        working-directory: backend
         run: npm ci
 
       - name: Build server executable
-        working-directory: backend
         run: npm run build
 
       - name: Compute SHA-256 checksum
-        working-directory: backend
         shell: pwsh
         run: |
           $exePath = "dist\DRT Server.exe"
@@ -44,5 +41,5 @@ jobs:
         with:
           generate_release_notes: true
           files: |
-            backend/dist/DRT Server.exe
-            backend/dist/DRT Server.exe.sha256
+            dist/DRT Server.exe
+            dist/DRT Server.exe.sha256
