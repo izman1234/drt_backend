@@ -34,7 +34,8 @@ The server component of the Discord Replacement Tool — a self-hosted, privacy-
 
 ## Setup
 
-If you only care about using it and not actually contributing go to the tags tab and download the exe of the desired version. Else:
+If you only care about using it and not actually contributing go to the tags tab and download the .exe and .sha256 of the desired version. 
+Else:
 
 1. Install dependencies:
    ```bash

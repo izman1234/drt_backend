@@ -32,8 +32,8 @@ jobs:
         run: |
           $exePath = "dist\DRT Server.exe"
           $hash = (Get-FileHash $exePath -Algorithm SHA256).Hash.ToLower()
-          $line = "$hash  DRT Server.exe"
-          [System.IO.File]::WriteAllText("dist\DRT Server.exe.sha256", $line)
+          $line = "$hash  DRT.Server.exe"
+          [System.IO.File]::WriteAllText("dist\DRT.Server.exe.sha256", $line)
           Write-Host "SHA-256: $line"
 
       - name: Create GitHub Release

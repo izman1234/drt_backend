@@ -24,8 +24,8 @@ const log = require('./logger');
 // ═══════════════════════════════════════════════════════════════════════
 const GITHUB_OWNER        = 'izman1234';
 const GITHUB_REPO         = 'drt_backend';
-const EXE_ASSET_NAME      = 'DRT Server.exe';
-const CHECKSUM_ASSET_NAME = 'DRT Server.exe.sha256';
+const EXE_ASSET_NAME      = 'DRT.Server.exe';
+const CHECKSUM_ASSET_NAME = 'DRT.Server.exe.sha256';
 const CHECK_INTERVAL_MS   = 24 * 60 * 60 * 1000;   // 24 hours
 
 // ═══════════════════════════════════════════════════════════════════════
