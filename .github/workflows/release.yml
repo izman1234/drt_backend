@@ -42,4 +42,4 @@ jobs:
           generate_release_notes: true
           files: |
             dist/DRT Server.exe
-            dist/DRT Server.exe.sha256
+            dist/DRT.Server.exe.sha256
