@@ -425,6 +425,38 @@ if (process.pkg && !process.argv.includes('--no-update')) {
 
 } // end startServer
 
+// ── Graceful shutdown (used by auto-updater) ──────────────────────────
+function shutdownServer() {
+  return new Promise((resolve) => {
+    log.info('Shutting down server for update...');
+
+    let pending = 0;
+    const done = () => { if (--pending <= 0) resolve(); };
+
+    if (io) { try { io.close(); } catch {} }
+
+    if (server && server.listening) {
+      pending++;
+      server.close(done);
+    }
+    if (httpsServer && httpsServer !== server && httpsServer.listening) {
+      pending++;
+      httpsServer.close(done);
+    }
+    if (httpServer && httpServer !== server && httpServer.listening) {
+      pending++;
+      httpServer.close(done);
+    }
+
+    if (pending === 0) resolve();
+
+    // Safety timeout — don't wait forever
+    setTimeout(resolve, 5000);
+  });
+}
+
+module.exports = { shutdownServer };
+
 // Launch
 startServer().catch(err => {
   log.error('Fatal: Failed to start server:', err);

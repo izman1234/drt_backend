@@ -359,9 +359,23 @@ async function downloadAndApply(version, exeAsset, checksumAsset) {
     '--newExe',       newExe,
     '--targetExe',    process.execPath,
     '--restartArgs',  JSON.stringify(restartArgs),
+    '--port',         String(require('./config').PORT),
   ];
 
   log.info('Launching updater helper and restarting...');
+
+  // Gracefully close the server so the port is released before restart
+  try {
+    const { shutdownServer } = require('./index');
+    if (shutdownServer) {
+      log.info('Closing server connections...');
+      await shutdownServer();
+      // Give OS a moment to fully release the port
+      await sleep(1000);
+    }
+  } catch (err) {
+    log.warn('Could not gracefully shut down server:', err.message);
+  }
 
   const child = require('child_process').spawn(helperPath, helperArgs, {
     detached: true,
@@ -463,6 +477,18 @@ async function applyUpdate() {
 
   console.log('[updater] Update successful — restarting server...');
 
+  // ── Wait for port to be free ───────────────────────────────────────
+  const port = parseInt(val('--port'), 10);
+  if (port) {
+    console.log(`[updater] Waiting for port ${port} to be released...`);
+    const portFreeDeadline = Date.now() + 15000;
+    while (Date.now() < portFreeDeadline) {
+      const inUse = await isPortInUse(port);
+      if (!inUse) break;
+      await sleep(500);
+    }
+  }
+
   // ── Restart the updated server ─────────────────────────────────────
   const child = require('child_process').spawn(targetExe, restartArgs, {
     detached: true,
@@ -479,6 +505,17 @@ async function applyUpdate() {
 
 // ── tiny async sleep helper ──────────────────────────────────────────
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// ── port-in-use check ────────────────────────────────────────────────
+function isPortInUse(port) {
+  return new Promise(resolve => {
+    const net = require('net');
+    const srv = net.createServer();
+    srv.once('error', () => resolve(true));
+    srv.once('listening', () => { srv.close(); resolve(false); });
+    srv.listen(port);
+  });
+}
 
 // ═══════════════════════════════════════════════════════════════════════
 // Exports
