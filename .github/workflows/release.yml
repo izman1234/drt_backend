@@ -1,0 +1,48 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: npm ci
+
+      - name: Build server executable
+        working-directory: backend
+        run: npm run build
+
+      - name: Compute SHA-256 checksum
+        working-directory: backend
+        shell: pwsh
+        run: |
+          $exePath = "dist\DRT Server.exe"
+          $hash = (Get-FileHash $exePath -Algorithm SHA256).Hash.ToLower()
+          $line = "$hash  DRT Server.exe"
+          [System.IO.File]::WriteAllText("dist\DRT Server.exe.sha256", $line)
+          Write-Host "SHA-256: $line"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            backend/dist/DRT Server.exe
+            backend/dist/DRT Server.exe.sha256
