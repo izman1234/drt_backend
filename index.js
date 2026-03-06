@@ -59,6 +59,17 @@ let httpsServer;  // HTTPS handler
 let io;
 let usingTls = false; // true when HTTPS is available
 
+// ── Track all raw TCP sockets so we can force-destroy them on shutdown ──
+const activeSockets = new Set();
+
+function trackSockets(srv) {
+  if (!srv) return;
+  srv.on('connection', (socket) => {
+    activeSockets.add(socket);
+    socket.once('close', () => activeSockets.delete(socket));
+  });
+}
+
 async function startServer() {
 
   log.info('─────────────────────────────────────────');
@@ -396,6 +407,11 @@ io.on('connection', (socket) => {
   });
 });
 
+// Track sockets on all servers for clean shutdown
+trackSockets(server);
+if (httpsServer && httpsServer !== server) trackSockets(httpsServer);
+if (httpServer && httpServer !== server) trackSockets(httpServer);
+
 server.listen(PORT, () => {
   if (DUAL_PROTOCOL) {
     log.ok(`HTTP server running on port ${PORT}`);
@@ -430,27 +446,32 @@ function shutdownServer() {
   return new Promise((resolve) => {
     log.info('Shutting down server for update...');
 
-    let pending = 0;
-    const done = () => { if (--pending <= 0) resolve(); };
-
-    if (io) { try { io.close(); } catch {} }
-
-    if (server && server.listening) {
-      pending++;
-      server.close(done);
-    }
-    if (httpsServer && httpsServer !== server && httpsServer.listening) {
-      pending++;
-      httpsServer.close(done);
-    }
-    if (httpServer && httpServer !== server && httpServer.listening) {
-      pending++;
-      httpServer.close(done);
+    // 1. Disconnect all Socket.IO clients immediately
+    if (io) {
+      try {
+        io.disconnectSockets(true);
+        io.close();
+      } catch {}
     }
 
-    if (pending === 0) resolve();
+    // 2. Destroy all raw TCP connections so the port is freed
+    for (const socket of activeSockets) {
+      try { socket.destroy(); } catch {}
+    }
+    activeSockets.clear();
 
-    // Safety timeout — don't wait forever
+    // 3. Close listeners
+    const servers = [server, httpsServer, httpServer].filter(
+      (s, i, arr) => s && s.listening && arr.indexOf(s) === i
+    );
+
+    let pending = servers.length;
+    if (pending === 0) return resolve();
+
+    const finish = () => { if (--pending <= 0) resolve(); };
+    for (const srv of servers) srv.close(finish);
+
+    // Safety timeout
     setTimeout(resolve, 5000);
   });
 }

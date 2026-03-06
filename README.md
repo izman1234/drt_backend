@@ -91,6 +91,7 @@ This produces a portable `.exe` in the `dist/` directory with an embedded databa
 - Video / Screen Sharing
 - Custom Server Emojis
 - Banning / Kicking
+- Direct Messaging
 - More I can't think of right now
 
 ## API Endpoints
