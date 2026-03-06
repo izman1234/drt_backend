@@ -24,9 +24,6 @@ jobs:
       - name: Install backend dependencies
         run: npm ci
 
-      - name: Rebuild native modules
-        run: npm rebuild sharp
-
       - name: Build server executable
         run: npm run build
 

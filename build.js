@@ -150,13 +150,17 @@ async function injectIcon(exePath, icoPath) {
   fs.writeFileSync(tempPe, pePart);
 
   try {
-    const { rcedit } = await import('rcedit');
-    await rcedit(tempPe, {
-      icon: icoPath,
-      'version-string': {
-        ProductName:     'DRT Server',
-        FileDescription: 'DRT Server',
-      },
+    // rcedit v5 is ESM-only; its JS wrapper has path-resolution issues
+    // under Node 18 dynamic import. Call the rcedit.exe binary directly.
+    const rceditExe = path.join(
+      __dirname, 'node_modules', 'rcedit', 'bin',
+      process.arch === 'x64' ? 'rcedit-x64.exe' : 'rcedit-x86.exe'
+    );
+    if (!fs.existsSync(rceditExe)) {
+      throw new Error('rcedit binary not found at ' + rceditExe);
+    }
+    execSync(`"${rceditExe}" "${tempPe}" --set-icon "${icoPath}" --set-version-string ProductName "DRT Server" --set-version-string FileDescription "DRT Server"`, {
+      stdio: 'inherit',
     });
   } catch (e) {
     console.warn('[build] WARNING: rcedit failed:', e.message);
