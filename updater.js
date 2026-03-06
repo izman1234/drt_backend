@@ -350,38 +350,27 @@ async function downloadAndApply(version, exeAsset, checksumAsset, shutdownFn) {
   log.info('Preparing update...');
   fs.copyFileSync(process.execPath, helperPath);
 
-  // Collect the arguments the server was originally started with,
-  // stripping one-shot update flags.
-  const restartArgs = process.argv.slice(1).filter(a => a !== '--check-updates');
-
   const helperArgs = [
     '--apply-update',
     '--newExe',       newExe,
     '--targetExe',    process.execPath,
-    '--restartArgs',  JSON.stringify(restartArgs),
-    '--port',         String(require('./config').PORT),
   ];
 
-  log.info('Launching updater helper and restarting...');
+  log.info('');
+  log.info('Shutting down server to apply update...');
 
-  // Gracefully close the server so the port is released before restart
+  // Gracefully close the server so the port is released
   if (typeof shutdownFn === 'function') {
     try {
-      log.info('Closing server connections...');
       await shutdownFn();
-      // Give OS a moment to fully release the port
-      await sleep(1000);
-      log.info('Server connections closed.');
     } catch (err) {
       log.warn('Could not gracefully shut down server:', err.message);
     }
-  } else {
-    log.warn('No shutdown function provided — port may linger briefly');
   }
 
   const child = require('child_process').spawn(helperPath, helperArgs, {
     detached: true,
-    stdio: 'ignore',
+    stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: false,
   });
   child.unref();
@@ -401,10 +390,6 @@ async function applyUpdate() {
 
   const newExe    = val('--newExe');
   const targetExe = val('--targetExe');
-  let restartArgs = [];
-
-  const raw = val('--restartArgs');
-  if (raw) { try { restartArgs = JSON.parse(raw); } catch {} }
 
   if (!newExe || !targetExe) {
     console.error('[updater] Missing --newExe or --targetExe');
@@ -432,7 +417,8 @@ async function applyUpdate() {
   }
 
   if (!unlocked) {
-    console.error('[updater] Timed out waiting for exe to be released');
+    console.error('[updater] Timed out waiting for exe to be released.');
+    console.error('[updater] Close the server manually and re-run the update.');
     process.exit(1);
   }
 
@@ -452,7 +438,6 @@ async function applyUpdate() {
   // ── Copy new exe into place (copyFile works cross-volume) ──────────
   try {
     fs.copyFileSync(newExe, targetExe);
-    console.log('[updater] Installed new version.');
   } catch (err) {
     console.error('[updater] Install failed:', err.message);
     // Attempt restore
@@ -477,47 +462,21 @@ async function applyUpdate() {
     process.exit(1);
   }
 
-  console.log('[updater] Update successful — restarting server...');
-
-  // ── Wait for port to be free ───────────────────────────────────────
-  const port = parseInt(val('--port'), 10);
-  if (port) {
-    console.log(`[updater] Waiting for port ${port} to be released...`);
-    const portFreeDeadline = Date.now() + 15000;
-    while (Date.now() < portFreeDeadline) {
-      const inUse = await isPortInUse(port);
-      if (!inUse) break;
-      await sleep(500);
-    }
-  }
-
-  // ── Restart the updated server ─────────────────────────────────────
-  const child = require('child_process').spawn(targetExe, restartArgs, {
-    detached: true,
-    stdio: 'ignore',
-    windowsHide: false,
-  });
-  child.unref();
-
   // Clean up downloaded file (best effort)
   try { fs.unlinkSync(newExe); } catch {}
+
+  console.log('');
+  console.log('  ============================================');
+  console.log('  Update applied successfully!');
+  console.log('  You can now restart the server.');
+  console.log('  ============================================');
+  console.log('');
 
   process.exit(0);
 }
 
 // ── tiny async sleep helper ──────────────────────────────────────────
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
-
-// ── port-in-use check ────────────────────────────────────────────────
-function isPortInUse(port) {
-  return new Promise(resolve => {
-    const net = require('net');
-    const srv = net.createServer();
-    srv.once('error', () => resolve(true));
-    srv.once('listening', () => { srv.close(); resolve(false); });
-    srv.listen(port);
-  });
-}
 
 // ═══════════════════════════════════════════════════════════════════════
 // Exports

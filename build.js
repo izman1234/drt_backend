@@ -150,7 +150,7 @@ async function injectIcon(exePath, icoPath) {
   fs.writeFileSync(tempPe, pePart);
 
   try {
-    const { rcedit } = require('rcedit');
+    const { rcedit } = await import('rcedit');
     await rcedit(tempPe, {
       icon: icoPath,
       'version-string': {
