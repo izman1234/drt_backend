@@ -2,6 +2,10 @@
 
 The server component of the Discord Replacement Tool — a self-hosted, privacy-focused chat platform with real-time messaging, voice channels, and end-to-end identity verification.
 
+## Disclaimer
+
+I do not claim to be a expert in security or secure software design. This project started as a way to not use Discord after all the age verification and AI stuff and was made for fun. On that note, this project may contain many bugs or security vulnerabilities. By using it, you expect all risk and responsibility for running or modifying it.
+
 ## Features
 
 - **Passwordless Authentication** — Ed25519 challenge-response identity system (no passwords sent to server)
@@ -34,8 +38,8 @@ The server component of the Discord Replacement Tool — a self-hosted, privacy-
 
 ## Setup
 
-If you only care about using it and not actually contributing go to the tags tab and download the .exe and .sha256 of the desired version. 
-Else:
+If you only care about using it and not actually contributing go to the tags tab and download the .exe of the desired version. Then put it in a folder you'd like to host the server in and double click it. Make sure you've opened the correct port on your router for others to connect. That's it!
+Else if you'd rather contribute:
 
 1. Install dependencies:
    ```bash
