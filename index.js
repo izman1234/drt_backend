@@ -121,6 +121,8 @@ async function startServer() {
 const connectedUsers = new Map();
 // Runtime per-user state (not persisted)
 const userStates = new Map(); // key: userId (string) -> { isMuted: bool, isDeafened: bool }
+// Track which voice rooms each socket is in (for reliable disconnect cleanup)
+const socketVoiceRooms = new Map(); // key: socketId -> Set<channelId>
 
 // Helper function to broadcast user list
 const broadcastUserList = () => {
@@ -202,6 +204,50 @@ const broadcastAllVoiceRoomMembers = () => {
   }
 };
 
+// Helper to send all active voice room members directly to a specific socket
+// (unicast instead of broadcast, guarantees the new client receives the data)
+const sendAllVoiceRoomMembersTo = (targetSocket) => {
+  try {
+    const rooms = io.sockets.adapter.rooms;
+    if (!rooms) return;
+    for (const roomName of rooms.keys()) {
+      if (roomName.startsWith('voice_')) {
+        const channelId = roomName.replace('voice_', '');
+        const room = roomName;
+        const clients = io.sockets.adapter.rooms.get(room) || new Set();
+        const userIds = [];
+        for (const sid of clients) {
+          const uid = connectedUsers.get(sid);
+          if (uid) userIds.push(uid);
+        }
+        if (userIds.length === 0) {
+          targetSocket.emit('voice:room-members-update', { channelId, members: [] });
+          continue;
+        }
+        const placeholders = userIds.map(() => '?').join(',');
+        db.all(`SELECT id, displayName, profilePicture, nameColor, status, username FROM users WHERE id IN (${placeholders})`, userIds, (err, rows) => {
+          if (err) {
+            targetSocket.emit('voice:room-members-update', { channelId, members: userIds.map(id => ({ id, socketId: null, displayName: null, profilePicture: null, nameColor: '#b9bbbe', status: 'online', isMuted: false, isDeafened: false })) });
+            return;
+          }
+          const members = rows.map(r => {
+            const state = userStates.get(String(r.id)) || { isMuted: false, isDeafened: false };
+            let memberSocketId = null;
+            for (const sid of clients) {
+              if (connectedUsers.get(sid) === r.id) { memberSocketId = sid; break; }
+            }
+            return { id: r.id, socketId: memberSocketId, displayName: r.displayName || r.username, profilePicture: r.profilePicture || null, nameColor: r.nameColor || '#b9bbbe', status: r.status || 'online', isMuted: !!state.isMuted, isDeafened: !!state.isDeafened };
+          });
+          members.sort((a, b) => (a.displayName || '').localeCompare(b.displayName || ''));
+          targetSocket.emit('voice:room-members-update', { channelId, members });
+        });
+      }
+    }
+  } catch (e) {
+    log.error('Error sending voice room members to socket', e);
+  }
+};
+
 // Middleware
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
@@ -258,11 +304,14 @@ io.on('connection', (socket) => {
 
   // Register the JWT-authenticated user
   connectedUsers.set(socket.id, socket.userId);
-  if (!userStates.has(String(socket.userId))) {
-    userStates.set(String(socket.userId), { isMuted: false, isDeafened: false });
-  }
+  // Always reset mute/deafen state on new connection so stale state
+  // from a previous session doesn't persist.
+  userStates.set(String(socket.userId), { isMuted: false, isDeafened: false });
   db.run("UPDATE users SET status = 'online' WHERE id = ?", [socket.userId], () => {
     broadcastUserList();
+    // Send all current voice room members directly to the newly connected
+    // client (unicast) so they can see who is already in voice channels.
+    sendAllVoiceRoomMembersTo(socket);
   });
 
   socket.on('join_channel', (data) => {
@@ -323,6 +372,15 @@ io.on('connection', (socket) => {
     const { channelId, userId } = data;
     const room = `voice_${channelId}`;
     socket.join(room);
+
+    // Track voice room membership for reliable disconnect cleanup
+    if (!socketVoiceRooms.has(socket.id)) socketVoiceRooms.set(socket.id, new Set());
+    socketVoiceRooms.get(socket.id).add(channelId);
+
+    // Reset mute/deafen state on (re)join so it always matches
+    // the frontend's initial state (unmuted, undeafened).
+    userStates.set(String(userId), { isMuted: false, isDeafened: false });
+
     // Notify existing peers in the room about the new peer
     socket.to(room).emit('voice:peer-joined', { socketId: socket.id, userId });
 
@@ -348,6 +406,11 @@ io.on('connection', (socket) => {
     const room = `voice_${channelId}`;
     socket.leave(room);
     socket.to(room).emit('voice:peer-left', { socketId: socket.id });
+
+    // Remove from voice room tracking
+    const voiceRooms = socketVoiceRooms.get(socket.id);
+    if (voiceRooms) voiceRooms.delete(channelId);
+
     // Broadcast updated room member lists to all clients
     broadcastVoiceRoomMembers(channelId);
   });
@@ -388,20 +451,20 @@ io.on('connection', (socket) => {
     const userId = connectedUsers.get(socket.id);
     if (userId) {
       connectedUsers.delete(socket.id);
-      
+
+      // Collect the voice rooms BEFORE any async work —
+      // io.sockets.adapter.sids is already cleared by the time
+      // the disconnect event fires, so we use our own tracking map.
+      const voiceRooms = socketVoiceRooms.get(socket.id) || new Set();
+      socketVoiceRooms.delete(socket.id);
+
       // Update user status in database to offline
       db.run("UPDATE users SET status = 'offline' WHERE id = ?", [userId], () => {
         broadcastUserList();
         // Update all voice rooms the user was in
-        try {
-          const rooms = io.sockets.adapter.sids.get(socket.id) || new Set();
-          for (const r of rooms) {
-            if (r.startsWith('voice_')) {
-              const channelId = r.replace('voice_', '');
-              broadcastVoiceRoomMembers(channelId);
-            }
-          }
-        } catch (e) {}
+        for (const channelId of voiceRooms) {
+          broadcastVoiceRoomMembers(channelId);
+        }
       });
     }
   });
