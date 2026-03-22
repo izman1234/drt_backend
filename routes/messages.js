@@ -34,11 +34,22 @@ const verifyToken = (req, res, next) => {
   }
 };
 
+// Middleware to reject banned users (runs after verifyToken)
+const checkBan = (req, res, next) => {
+  db.get('SELECT username FROM users WHERE id = ?', [req.userId], (err, user) => {
+    if (err || !user) return res.status(401).json({ success: false, message: 'User not found' });
+    db.get('SELECT 1 FROM bans WHERE username = ?', [user.username], (_err2, ban) => {
+      if (ban) return res.status(403).json({ success: false, message: 'You are banned from this server' });
+      next();
+    });
+  });
+};
+
 module.exports = (io) => {
   const router = express.Router();
 
   // Send message
-  router.post('/', verifyToken, (req, res) => {
+  router.post('/', verifyToken, checkBan, (req, res) => {
     const { channelId, content, image, replyTo, signature, signingPayload } = req.body;
 
     if (!channelId) {
@@ -211,7 +222,7 @@ module.exports = (io) => {
   });
 
   // Update message
-  router.put('/:messageId', verifyToken, (req, res) => {
+  router.put('/:messageId', verifyToken, checkBan, (req, res) => {
     const { content, removeImage } = req.body;
     
     if (!content) {
@@ -269,7 +280,7 @@ module.exports = (io) => {
   });
 
   // Delete message
-  router.delete('/:messageId', verifyToken, (req, res) => {
+  router.delete('/:messageId', verifyToken, checkBan, (req, res) => {
     db.get('SELECT userId, channelId FROM messages WHERE id = ?', [req.params.messageId], (err, message) => {
       if (err || !message) {
         return res.status(404).json({ success: false, message: 'Message not found' });

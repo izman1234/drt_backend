@@ -5,10 +5,12 @@
   "dualProtocol": false,
   "databasePath": "./data/database.db",
   "klipyApiKey": "",
+  "whitelist": false,
   "_comments": {
     "serverIcon": "Place an image file (e.g. server-icon.png) next to this config and set serverIcon to the filename. Supports png, jpg, gif, webp.",
     "dualProtocol": "When true, serves HTTP on PORT and HTTPS on PORT+1 (for development). When false (default), serves HTTPS only on PORT.",
     "databasePath": "Relative paths are resolved from the folder containing the executable.",
-    "klipyApiKey": "API key for Klipy GIF service. Leave empty to disable GIF search."
+    "klipyApiKey": "API key for Klipy GIF service. Leave empty to disable GIF search.",
+    "whitelist": "When true, only whitelisted users can register/connect. Use /whitelist add <username> to add users."
   }
 }

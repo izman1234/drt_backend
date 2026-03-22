@@ -12,6 +12,7 @@ const db = require('../database');
 const { ready, generateChallenge, verifySignature, hashPublicKey } = require('../crypto');
 
 const { JWT_SECRET } = require('../config');
+const config = require('../config');
 const log = require('../logger');
 
 // ── Rate limiter (in-memory, per-IP) ──────────────────────────────────
@@ -92,6 +93,20 @@ module.exports = (io) => {
         return res.status(400).json({ success: false, message: 'Missing required fields: username, displayName, identityPublicKey' });
       }
 
+      // ── Ban check ──────────────────────────────────────────────────
+      const ban = await dbGet('SELECT reason FROM bans WHERE username = ?', [username]);
+      if (ban) {
+        return res.status(403).json({ success: false, message: 'You are banned from this server.' + (ban.reason ? ' Reason: ' + ban.reason : '') });
+      }
+
+      // ── Whitelist check ────────────────────────────────────────────
+      if (config.WHITELIST) {
+        const allowed = await dbGet('SELECT 1 FROM whitelist WHERE username = ?', [username]);
+        if (!allowed) {
+          return res.status(403).json({ success: false, message: 'This server has whitelist enabled. You are not whitelisted.' });
+        }
+      }
+
       // Validate Ed25519 public key (must be 32 bytes)
       const pubKeyBytes = Buffer.from(identityPublicKey, 'base64');
       if (pubKeyBytes.length !== 32) {
@@ -160,6 +175,20 @@ module.exports = (io) => {
       const { username, type = 'identity' } = req.body;
       if (!username) {
         return res.status(400).json({ success: false, message: 'Username is required' });
+      }
+
+      // ── Ban check ──────────────────────────────────────────────────
+      const ban = await dbGet('SELECT reason FROM bans WHERE username = ?', [username]);
+      if (ban) {
+        return res.status(403).json({ success: false, message: 'You are banned from this server.' + (ban.reason ? ' Reason: ' + ban.reason : '') });
+      }
+
+      // ── Whitelist check ────────────────────────────────────────────
+      if (config.WHITELIST) {
+        const allowed = await dbGet('SELECT 1 FROM whitelist WHERE username = ?', [username]);
+        if (!allowed) {
+          return res.status(403).json({ success: false, message: 'This server has whitelist enabled. You are not whitelisted.' });
+        }
       }
 
       const user = await dbGet(

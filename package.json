@@ -11,7 +11,8 @@
   },
   "pkg": {
     "assets": [
-      "node_modules/sqlite3/build/**/*"
+      "node_modules/sqlite3/build/**/*",
+      "commands/**/*"
     ],
     "outputPath": "dist"
   },

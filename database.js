@@ -135,4 +135,30 @@ db.serialize(() => {
   });
 });
 
+// ── Server management tables ──────────────────────────────────────────
+// Owners — users who have admin-level access
+db.serialize(() => {
+  db.run(`CREATE TABLE IF NOT EXISTS owners (
+    username TEXT PRIMARY KEY NOT NULL,
+    addedAt DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`);
+});
+
+// Bans — users who are not allowed to connect
+db.serialize(() => {
+  db.run(`CREATE TABLE IF NOT EXISTS bans (
+    username TEXT PRIMARY KEY NOT NULL,
+    reason TEXT,
+    bannedAt DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`);
+});
+
+// Whitelist — users who are allowed to register/connect when whitelist mode is on
+db.serialize(() => {
+  db.run(`CREATE TABLE IF NOT EXISTS whitelist (
+    username TEXT PRIMARY KEY NOT NULL,
+    addedAt DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`);
+});
+
 module.exports = db;

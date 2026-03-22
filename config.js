@@ -72,11 +72,13 @@ function loadUserConfig() {
         dualProtocol: false,
         databasePath: './data/database.db',
         klipyApiKey: '',
+        whitelist: false,
         _comments: {
           serverIcon: 'Place an image file (e.g. server-icon.png) next to this config and set serverIcon to the filename. Supports png, jpg, gif, webp.',
           dualProtocol: 'When true, serves HTTP on PORT and HTTPS on PORT+1 (for development). When false (default), serves HTTPS only on PORT.',
           databasePath: 'Relative paths are resolved from the folder containing the executable.',
           klipyApiKey: 'API key for Klipy GIF service. Leave empty to disable GIF search.',
+          whitelist: 'When true, only whitelisted users can register/connect. Use /whitelist add <username> to add users.',
         },
       };
       fs.writeFileSync(CONFIG_PATH, JSON.stringify(defaults, null, 2), 'utf-8');
@@ -99,11 +101,12 @@ function cfg(key, fallback) {
 }
 
 // ── Public configuration values ───────────────────────────────────────
-const SERVER_NAME    = cfg('serverName', 'DRT Server');
-const PORT           = parseInt(cfg('port', 5000), 10);
-const DUAL_PROTOCOL  = cfg('dualProtocol', false) === true;
-const DB_PATH        = cfg('databasePath', './data/database.db');
-const KLIPY_API_KEY  = cfg('klipyApiKey', '');
+let SERVER_NAME    = cfg('serverName', 'DRT Server');
+let PORT           = parseInt(cfg('port', 5000), 10);
+let DUAL_PROTOCOL  = cfg('dualProtocol', false) === true;
+let DB_PATH        = cfg('databasePath', './data/database.db');
+let KLIPY_API_KEY  = cfg('klipyApiKey', '');
+let WHITELIST      = cfg('whitelist', false) === true;
 
 // ── Server icon ───────────────────────────────────────────────────────
 // The user can either:
@@ -138,7 +141,7 @@ function resolveServerIcon() {
   }
 }
 
-const SERVER_ICON = resolveServerIcon();
+let SERVER_ICON = resolveServerIcon();
 
 // Resolve DB_PATH relative to BASE_DIR so it works inside pkg
 const resolvedDbPath = path.isAbsolute(DB_PATH)
@@ -256,12 +259,39 @@ setEncryptionKey(ENCRYPTION_KEY);
 
 module.exports = {
   BASE_DIR,
+  CONFIG_PATH,
   JWT_SECRET,
   ENCRYPTION_KEY,
-  PORT,
-  DUAL_PROTOCOL,
+  get PORT() { return PORT; },
+  get DUAL_PROTOCOL() { return DUAL_PROTOCOL; },
   DB_PATH: resolvedDbPath,
-  SERVER_NAME,
-  SERVER_ICON,
-  KLIPY_API_KEY,
+  get SERVER_NAME() { return SERVER_NAME; },
+  get SERVER_ICON() { return SERVER_ICON; },
+  get KLIPY_API_KEY() { return KLIPY_API_KEY; },
+  get WHITELIST() { return WHITELIST; },
+  /**
+   * Re-read server-config.json and update mutable config values.
+   * Returns an object describing what changed.
+   */
+  reloadConfig() {
+    const oldValues = { SERVER_NAME, PORT, DUAL_PROTOCOL, KLIPY_API_KEY, WHITELIST, SERVER_ICON };
+    loadUserConfig();
+    SERVER_NAME   = cfg('serverName', 'DRT Server');
+    const newPort = parseInt(cfg('port', 5000), 10);
+    DUAL_PROTOCOL = cfg('dualProtocol', false) === true;
+    KLIPY_API_KEY = cfg('klipyApiKey', '');
+    WHITELIST     = cfg('whitelist', false) === true;
+    SERVER_ICON   = resolveServerIcon();
+
+    const changes = [];
+    if (oldValues.SERVER_NAME !== SERVER_NAME) changes.push(`serverName: "${oldValues.SERVER_NAME}" → "${SERVER_NAME}"`);
+    if (oldValues.PORT !== newPort) changes.push(`port: ${oldValues.PORT} → ${newPort} (requires restart)`);
+    if (oldValues.DUAL_PROTOCOL !== DUAL_PROTOCOL) changes.push(`dualProtocol: ${oldValues.DUAL_PROTOCOL} → ${DUAL_PROTOCOL} (requires restart)`);
+    if (oldValues.KLIPY_API_KEY !== KLIPY_API_KEY) changes.push('klipyApiKey updated');
+    if (oldValues.WHITELIST !== WHITELIST) changes.push(`whitelist: ${oldValues.WHITELIST} → ${WHITELIST}`);
+    if (oldValues.SERVER_ICON !== SERVER_ICON) changes.push('serverIcon updated');
+
+    PORT = newPort;
+    return changes;
+  },
 };

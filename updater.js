@@ -184,9 +184,19 @@ function computeSHA256(filePath) {
 // ═══════════════════════════════════════════════════════════════════════
 // Console prompt (Y/n)
 // ═══════════════════════════════════════════════════════════════════════
+// Use the server console's askQuestion() so we share the same readline
+// instead of creating a conflicting second instance on stdin.
+let _promptFn = null;
+
+function setPromptFn(fn) { _promptFn = fn; }
+
 function promptUser(question) {
+  if (_promptFn) {
+    return _promptFn(question).then(a => a.toLowerCase());
+  }
+  // Fallback for helper mode / non-interactive
   return new Promise(resolve => {
-    if (!process.stdin.isTTY) return resolve('n'); // non-interactive → skip
+    if (!process.stdin.isTTY) return resolve('n');
     const rl = require('readline').createInterface({
       input: process.stdin,
       output: process.stdout,
@@ -481,4 +491,4 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 // ═══════════════════════════════════════════════════════════════════════
 // Exports
 // ═══════════════════════════════════════════════════════════════════════
-module.exports = { checkForUpdates, applyUpdate, getCurrentVersion };
+module.exports = { checkForUpdates, applyUpdate, getCurrentVersion, setPromptFn };

@@ -5,9 +5,10 @@ const http = require('http');
 const socketIo = require('socket.io');
 const jwt = require('jsonwebtoken');
 const db = require('./database');
-const { JWT_SECRET, PORT, DUAL_PROTOCOL, SERVER_NAME, SERVER_ICON, BASE_DIR } = require('./config');
+const { JWT_SECRET, PORT, DUAL_PROTOCOL, SERVER_NAME, SERVER_ICON, BASE_DIR, WHITELIST } = require('./config');
 const { getTlsCredentials } = require('./tls');
 const log = require('./logger');
+const serverConsole = require('./console');
 
 // Set console window title to server name
 process.title = SERVER_NAME;
@@ -15,31 +16,14 @@ process.title = SERVER_NAME;
 // ── Disable Windows QuickEdit mode ────────────────────────────────────
 // When QuickEdit is enabled, clicking the console window freezes the
 // process (title changes to "Select …") until Enter is pressed.
-// We clear the ENABLE_QUICK_EDIT_MODE flag via SetConsoleMode so the
-// server can never be accidentally paused by a stray click.
-if (process.platform === 'win32') {
-  try {
-    const _cp = require('child_process');
-    const _os = require('os');
-    const _ps = require('path');
-    const _fss = require('fs');
-    const _tmp = _ps.join(_os.tmpdir(), '_drt_qe_' + process.pid + '.ps1');
-    _fss.writeFileSync(_tmp, [
-      '$c = Add-Type -Name QE -Namespace Win32 -PassThru -MemberDefinition @"',
-      '[DllImport("kernel32.dll")] public static extern IntPtr GetStdHandle(int h);',
-      '[DllImport("kernel32.dll")] public static extern bool GetConsoleMode(IntPtr h, out uint m);',
-      '[DllImport("kernel32.dll")] public static extern bool SetConsoleMode(IntPtr h, uint m);',
-      '"@',
-      '$h = $c::GetStdHandle(-10)',
-      '$m = 0',
-      '$c::GetConsoleMode($h, [ref]$m) | Out-Null',
-      '$c::SetConsoleMode($h, $m -band (-bnot 0x0040)) | Out-Null',
-    ].join('\r\n'), 'utf-8');
-    _cp.execSync(`powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${_tmp}"`, {
-      stdio: ['inherit', 'ignore', 'ignore'],  // inherit stdin so PS can access the console input handle
-    });
-    try { _fss.unlinkSync(_tmp); } catch (_) {}
-  } catch (e) { /* non-fatal — server still works, just with QuickEdit on */ }
+// Calling setRawMode(false) resets the console mode to
+// ENABLE_ECHO_INPUT | ENABLE_LINE_INPUT | ENABLE_PROCESSED_INPUT (0x07)
+// via libuv's SetConsoleMode — this does NOT include
+// ENABLE_QUICK_EDIT_MODE (0x40), so QuickEdit is cleared.  Once
+// readline starts it switches to raw mode (0x04) which also excludes
+// QuickEdit, keeping it disabled for the lifetime of the process.
+if (process.platform === 'win32' && process.stdin.isTTY) {
+  try { process.stdin.setRawMode(false); } catch (_) {}
 }
 
 // Import routes
@@ -271,9 +255,10 @@ app.get('/api/health', (req, res) => {
 
 // Server info endpoint (public, no auth required)
 app.get('/api/server/info', (req, res) => {
+  const config = require('./config');
   const info = {
-    name: SERVER_NAME,
-    icon: SERVER_ICON,
+    name: config.SERVER_NAME,
+    icon: config.SERVER_ICON,
     tls: usingTls,
   };
   // In dual-protocol mode, tell clients the HTTPS port
@@ -283,7 +268,7 @@ app.get('/api/server/info', (req, res) => {
   res.json(info);
 });
 
-// Socket.io JWT authentication middleware
+// Socket.io JWT authentication middleware (also rejects banned users)
 io.use((socket, next) => {
   const token = socket.handshake.auth?.token;
   if (!token) {
@@ -292,7 +277,14 @@ io.use((socket, next) => {
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
     socket.userId = decoded.userId;
-    next();
+    // Check if this user is banned before allowing the connection
+    db.get('SELECT username FROM users WHERE id = ?', [decoded.userId], (err, user) => {
+      if (err || !user) return next(new Error('User not found'));
+      db.get('SELECT 1 FROM bans WHERE username = ?', [user.username], (_err2, ban) => {
+        if (ban) return next(new Error('You are banned from this server'));
+        next();
+      });
+    });
   } catch (err) {
     return next(new Error('Invalid authentication token'));
   }
@@ -491,14 +483,29 @@ server.listen(PORT, () => {
   }
 });
 
-log.info('Server is ready. Press Ctrl+C to stop.');
+log.info('Server is ready. Type "/help" to see available commands.');
+
+// ── Interactive server console ──────────────────────────────────────
+serverConsole.start({
+  db,
+  io,
+  log,
+  connectedUsers,
+  userStates,
+  shutdownServer,
+  config: { SERVER_NAME, PORT, DUAL_PROTOCOL, usingTls, WHITELIST },
+});
 
 // ── Auto-update check ───────────────────────────────────────────────
 // Runs once after startup; respects 24-hour cooldown unless forced.
 if (process.pkg && !process.argv.includes('--no-update')) {
   const forceUpdate = process.argv.includes('--check-updates');
+  // Wire the updater's Y/n prompt through the server console's readline
+  // so it doesn't create a second conflicting readline on stdin.
+  const updater = require('./updater');
+  updater.setPromptFn(serverConsole.askQuestion);
   setTimeout(() => {
-    require('./updater').checkForUpdates(forceUpdate, { shutdownFn: shutdownServer }).catch(() => {});
+    updater.checkForUpdates(forceUpdate, { shutdownFn: shutdownServer }).catch(() => {});
   }, 3000);
 }
 
