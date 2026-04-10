@@ -27,6 +27,7 @@ db.serialize(() => {
     recoveryPublicKey TEXT,
     backupBlob TEXT,
     authVersion INTEGER DEFAULT 0,
+    bio TEXT DEFAULT '',
     createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
   )`);
 
@@ -159,6 +160,21 @@ db.serialize(() => {
     username TEXT PRIMARY KEY NOT NULL,
     addedAt DATETIME DEFAULT CURRENT_TIMESTAMP
   )`);
+});
+
+// ── Migrations ────────────────────────────────────────────────────────
+// Add bio column to users table (for existing databases)
+db.serialize(() => {
+  db.all("PRAGMA table_info(users)", (err, cols) => {
+    if (err) return;
+    const hasBio = cols.some(c => c.name === 'bio');
+    if (!hasBio) {
+      db.run("ALTER TABLE users ADD COLUMN bio TEXT DEFAULT ''", (alterErr) => {
+        if (alterErr) log.error('Failed to add bio column:', alterErr.message);
+        else log.ok('Added bio column to users table');
+      });
+    }
+  });
 });
 
 module.exports = db;
