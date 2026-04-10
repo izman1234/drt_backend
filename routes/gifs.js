@@ -1,7 +1,7 @@
 const express = require('express');
 const axios = require('axios');
 const crypto = require('crypto');
-const { KLIPY_API_KEY } = require('../config');
+const config = require('../config');
 const log = require('../logger');
 
 const KLIPY_API_URL = 'https://api.klipy.com/api/v1';
@@ -11,7 +11,7 @@ module.exports = (io) => {
 
   // Middleware to check if Klipy API key is configured
   const checkKlipyKey = (req, res, next) => {
-    if (!KLIPY_API_KEY) {
+    if (!config.KLIPY_API_KEY) {
       return res.status(503).json({ 
         error: 'GIF service not configured for this server', 
         message: 'Server administrator has not configured Klipy API key' 
@@ -43,7 +43,7 @@ module.exports = (io) => {
       const customerId = getCustomerId(req);
 
       const response = await axios.get(
-        `${KLIPY_API_URL}/${KLIPY_API_KEY}/gifs/search`,
+        `${KLIPY_API_URL}/${config.KLIPY_API_KEY}/gifs/search`,
         {
           params: {
             q,
@@ -69,7 +69,7 @@ module.exports = (io) => {
       const customerId = getCustomerId(req);
 
       const response = await axios.get(
-        `${KLIPY_API_URL}/${KLIPY_API_KEY}/gifs/trending`,
+        `${KLIPY_API_URL}/${config.KLIPY_API_KEY}/gifs/trending`,
         {
           params: {
             page,
@@ -91,7 +91,7 @@ module.exports = (io) => {
   router.get('/categories', checkKlipyKey, async (req, res) => {
     try {
       const response = await axios.get(
-        `${KLIPY_API_URL}/${KLIPY_API_KEY}/gifs/categories`,
+        `${KLIPY_API_URL}/${config.KLIPY_API_KEY}/gifs/categories`,
         {
           params: {
             locale: 'en_US'
@@ -114,7 +114,7 @@ module.exports = (io) => {
       const customerId = getCustomerId(req);
 
       const response = await axios.get(
-        `${KLIPY_API_URL}/${KLIPY_API_KEY}/gifs/search`,
+        `${KLIPY_API_URL}/${config.KLIPY_API_KEY}/gifs/search`,
         {
           params: {
             q: categoryName,

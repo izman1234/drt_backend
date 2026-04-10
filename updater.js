@@ -38,6 +38,12 @@ const STATE_FILE = path.join(BASE_DIR, 'update-state.json');
 // Version helpers
 // ═══════════════════════════════════════════════════════════════════════
 function getCurrentVersion() {
+  // Prefer the version recorded by a previous update (persisted on disk)
+  // over the bundled package.json, which may be stale after self-update.
+  try {
+    const state = loadState();
+    if (state.installedVersion) return state.installedVersion;
+  } catch {}
   try { return require('./package.json').version; }
   catch { return '0.0.0'; }
 }
@@ -474,6 +480,19 @@ async function applyUpdate() {
 
   // Clean up downloaded file (best effort)
   try { fs.unlinkSync(newExe); } catch {}
+
+  // Record the installed version so getCurrentVersion() uses it
+  // (the bundled package.json inside the new exe may still be stale).
+  try {
+    const targetDir = path.dirname(targetExe);
+    const stateFile = path.join(targetDir, 'update-state.json');
+    let st = {};
+    try { st = JSON.parse(fs.readFileSync(stateFile, 'utf-8')); } catch {}
+    // Derive version from the temp dir name set during downloadAndApply
+    const versionMatch = newExe.match(/drt-update[/\\]([^/\\]+)[/\\]/);
+    if (versionMatch) st.installedVersion = versionMatch[1];
+    fs.writeFileSync(stateFile, JSON.stringify(st, null, 2), 'utf-8');
+  } catch {}
 
   console.log('');
   console.log('  ============================================');

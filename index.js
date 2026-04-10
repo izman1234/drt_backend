@@ -314,6 +314,13 @@ io.on('connection', (socket) => {
     socket.leave(`channel_${data.channelId}`);
   });
 
+  // Typing indicator: relay to all other clients
+  socket.on('typing:start', (data) => {
+    const { channelId, userId, displayName } = data || {};
+    if (!channelId || !userId) return;
+    socket.broadcast.emit('typing:start', { channelId, userId, displayName });
+  });
+
   // Receive runtime mute/deafen updates from clients
   socket.on('voice:set-muted', (data) => {
     const { userId, isMuted } = data || {};

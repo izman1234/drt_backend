@@ -12,10 +12,25 @@ const { JWT_SECRET } = require('../config');
 function decryptMessage(msg) {
   if (!msg) return msg;
   if (msg.content) msg.content = decrypt(msg.content);
-  if (msg.image) msg.image = decrypt(msg.image);
+  if (msg.image) {
+    const decrypted = decrypt(msg.image);
+    try {
+      msg.image = JSON.parse(decrypted);
+    } catch {
+      // Legacy single-image format
+      msg.image = [decrypted];
+    }
+  }
   // Also decrypt replied-to message fields
   if (msg.repliedToContent) msg.repliedToContent = decrypt(msg.repliedToContent);
-  if (msg.repliedToImage) msg.repliedToImage = decrypt(msg.repliedToImage);
+  if (msg.repliedToImage) {
+    const decrypted = decrypt(msg.repliedToImage);
+    try {
+      msg.repliedToImage = JSON.parse(decrypted);
+    } catch {
+      msg.repliedToImage = [decrypted];
+    }
+  }
   return msg;
 }
 
@@ -50,13 +65,21 @@ module.exports = (io) => {
 
   // Send message
   router.post('/', verifyToken, checkBan, (req, res) => {
-    const { channelId, content, image, replyTo, signature, signingPayload } = req.body;
+    const { channelId, content, image, images, replyTo, signature, signingPayload } = req.body;
 
     if (!channelId) {
       return res.status(400).json({ success: false, message: 'Channel ID is required' });
     }
 
-    if (!content && !image) {
+    // Normalize images: accept `images` array or legacy `image` string
+    let imageArray = null;
+    if (images && Array.isArray(images) && images.length > 0) {
+      imageArray = images.slice(0, 10);
+    } else if (image) {
+      imageArray = [image];
+    }
+
+    if (!content && !imageArray) {
       return res.status(400).json({ success: false, message: 'Message content or image is required' });
     }
 
@@ -65,7 +88,7 @@ module.exports = (io) => {
       const messageId = uuidv4();
       // Encrypt message content and image at rest
       const encContent = encrypt(content || '');
-      const encImage = image ? encrypt(image) : null;
+      const encImage = imageArray ? encrypt(JSON.stringify(imageArray)) : null;
       db.run(
         'INSERT INTO messages (id, channelId, userId, content, image, replyTo, signature) VALUES (?, ?, ?, ?, ?, ?, ?)',
         [messageId, channelId, req.userId, encContent, encImage, replyTo || null, sig || null],

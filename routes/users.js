@@ -84,6 +84,9 @@ module.exports = (io) => {
           if (io.broadcastUserList) {
             io.broadcastUserList();
           }
+
+          // Emit display name update so clients can patch loaded messages
+          io.emit('user:displayName-updated', { userId: req.userId, displayName: finalName });
           
           // Also broadcast all active voice room members since display name changed
           if (io.broadcastAllVoiceRoomMembers) {

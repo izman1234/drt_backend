@@ -32,8 +32,6 @@ module.exports = {
       // Update the console context's config snapshot
       ctx.config.SERVER_NAME   = config.SERVER_NAME;
       ctx.config.SERVER_ICON   = config.SERVER_ICON;
-      ctx.config.PORT          = config.PORT;
-      ctx.config.DUAL_PROTOCOL = config.DUAL_PROTOCOL;
       ctx.config.WHITELIST     = config.WHITELIST;
 
       // Update console window title

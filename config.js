@@ -278,7 +278,7 @@ module.exports = {
     loadUserConfig();
     SERVER_NAME   = cfg('serverName', 'DRT Server');
     const newPort = parseInt(cfg('port', 5000), 10);
-    DUAL_PROTOCOL = cfg('dualProtocol', false) === true;
+    const newDual = cfg('dualProtocol', false) === true;
     KLIPY_API_KEY = cfg('klipyApiKey', '');
     WHITELIST     = cfg('whitelist', false) === true;
     SERVER_ICON   = resolveServerIcon();
@@ -286,12 +286,15 @@ module.exports = {
     const changes = [];
     if (oldValues.SERVER_NAME !== SERVER_NAME) changes.push(`serverName: "${oldValues.SERVER_NAME}" → "${SERVER_NAME}"`);
     if (oldValues.PORT !== newPort) changes.push(`port: ${oldValues.PORT} → ${newPort} (requires restart)`);
-    if (oldValues.DUAL_PROTOCOL !== DUAL_PROTOCOL) changes.push(`dualProtocol: ${oldValues.DUAL_PROTOCOL} → ${DUAL_PROTOCOL} (requires restart)`);
+    if (oldValues.DUAL_PROTOCOL !== newDual) changes.push(`dualProtocol: ${oldValues.DUAL_PROTOCOL} → ${newDual} (requires restart)`);
     if (oldValues.KLIPY_API_KEY !== KLIPY_API_KEY) changes.push('klipyApiKey updated');
     if (oldValues.WHITELIST !== WHITELIST) changes.push(`whitelist: ${oldValues.WHITELIST} → ${WHITELIST}`);
     if (oldValues.SERVER_ICON !== SERVER_ICON) changes.push('serverIcon updated');
 
-    PORT = newPort;
+    // PORT and DUAL_PROTOCOL are NOT updated in memory — they control
+    // how the HTTP/HTTPS listeners are bound and cannot be changed
+    // without a full server restart.  The new values will take effect
+    // the next time the server is started.
     return changes;
   },
 };
