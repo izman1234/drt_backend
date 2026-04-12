@@ -24,7 +24,7 @@ module.exports = (io) => {
 
   // Get user profile
   router.get('/profile', verifyToken, (req, res) => {
-    db.get('SELECT identityPublicKey as id, username, displayName, isOnline, profilePicture, nameColor, bio, createdAt FROM users WHERE identityPublicKey = ?', [req.userId], (err, user) => {
+    db.get('SELECT identityPublicKey as id, username, displayName, isOnline, profilePicture, nameColor, bio, customStatus, createdAt FROM users WHERE identityPublicKey = ?', [req.userId], (err, user) => {
       if (err || !user) {
         return res.status(404).json({ success: false, message: 'User not found' });
       }
@@ -191,9 +191,36 @@ module.exports = (io) => {
     );
   });
 
+  // Update custom status
+  router.put('/customStatus', verifyToken, (req, res) => {
+    const { customStatus } = req.body;
+
+    if (typeof customStatus !== 'string') {
+      return res.status(400).json({ success: false, message: 'Custom status must be a string' });
+    }
+
+    const trimmedStatus = customStatus.slice(0, 128);
+
+    db.run(
+      'UPDATE users SET customStatus = ? WHERE identityPublicKey = ?',
+      [trimmedStatus, req.userId],
+      function(err) {
+        if (err) {
+          return res.status(500).json({ success: false, message: err.message });
+        }
+
+        if (io.broadcastUserList) {
+          io.broadcastUserList();
+        }
+
+        res.json({ success: true, message: 'Custom status updated', customStatus: trimmedStatus });
+      }
+    );
+  });
+
   // Get all users
   router.get('/all', verifyToken, (req, res) => {
-    db.all('SELECT identityPublicKey as id, username, displayName, isOnline, profilePicture, nameColor, status, bio FROM users WHERE leftServer = 0 ORDER BY username', (err, users) => {
+    db.all('SELECT identityPublicKey as id, username, displayName, isOnline, profilePicture, nameColor, status, bio, customStatus FROM users WHERE leftServer = 0 ORDER BY username', (err, users) => {
       if (err) {
         return res.status(500).json({ success: false, message: err.message });
       }

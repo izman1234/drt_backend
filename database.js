@@ -27,6 +27,7 @@ db.serialize(() => {
     backupBlob TEXT,
     authVersion INTEGER DEFAULT 1,
     bio TEXT DEFAULT '',
+    customStatus TEXT DEFAULT '',
     createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
   )`);
 
@@ -373,6 +374,20 @@ db.serialize(() => {
       db.run("ALTER TABLE users ADD COLUMN bio TEXT DEFAULT ''", (alterErr) => {
         if (alterErr) log.error('Failed to add bio column:', alterErr.message);
         else log.ok('Added bio column to users table');
+      });
+    }
+  });
+});
+
+// Add customStatus column to users table (for existing databases)
+db.serialize(() => {
+  db.all("PRAGMA table_info(users)", (err, cols) => {
+    if (err) return;
+    const hasCustomStatus = cols.some(c => c.name === 'customStatus');
+    if (!hasCustomStatus) {
+      db.run("ALTER TABLE users ADD COLUMN customStatus TEXT DEFAULT ''", (alterErr) => {
+        if (alterErr) log.error('Failed to add customStatus column:', alterErr.message);
+        else log.ok('Added customStatus column to users table');
       });
     }
   });

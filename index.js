@@ -110,7 +110,7 @@ const socketVoiceRooms = new Map(); // key: socketId -> Set<channelId>
 
 // Helper function to broadcast user list
 const broadcastUserList = () => {
-  db.all('SELECT identityPublicKey, username, displayName, status, profilePicture, nameColor, bio FROM users WHERE leftServer = 0 ORDER BY username', (err, users) => {
+  db.all('SELECT identityPublicKey, username, displayName, status, profilePicture, nameColor, bio, customStatus FROM users WHERE leftServer = 0 ORDER BY username', (err, users) => {
     if (!err && users) {
       const merged = users.map(u => {
         const state = userStates.get(String(u.identityPublicKey)) || { isMuted: false, isDeafened: false };

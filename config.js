@@ -78,7 +78,7 @@ function loadUserConfig() {
           dualProtocol: 'When true, serves HTTP on PORT and HTTPS on PORT+1 (for development). When false (default), serves HTTPS only on PORT.',
           databasePath: 'Relative paths are resolved from the folder containing the executable.',
           klipyApiKey: 'API key for Klipy GIF service. Leave empty to disable GIF search.',
-          whitelist: 'When true, only whitelisted users can register/connect. Use /whitelist add <username> to add users.',
+          whitelist: 'When true, only whitelisted users can register/connect. Use /whitelist add <users public key> to add users.',
         },
       };
       fs.writeFileSync(CONFIG_PATH, JSON.stringify(defaults, null, 2), 'utf-8');
