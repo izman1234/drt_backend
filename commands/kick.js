@@ -3,6 +3,8 @@
  */
 'use strict';
 
+const { disambiguateUser } = require('./disambiguate');
+
 module.exports = {
   name: 'kick',
   aliases: ['disconnect'],
@@ -19,35 +21,30 @@ module.exports = {
 
     const targetUsername = args[0];
 
-    return new Promise((resolve) => {
-      db.get(
-        'SELECT id, username, displayName FROM users WHERE username = ?',
-        [targetUsername],
-        (err, user) => {
-          if (err) { log.error('DB error:', err.message); return resolve(); }
-          if (!user) { log.warn(`User "@${targetUsername}" not found.`); return resolve(); }
+    try {
+      const user = await disambiguateUser(db, targetUsername, log);
+      if (!user) return;
 
-          // Find all sockets belonging to this user
-          let kicked = 0;
-          for (const [socketId, userId] of connectedUsers.entries()) {
-            if (userId === user.id) {
-              const socket = io.sockets.sockets.get(socketId);
-              if (socket) {
-                socket.emit('server:kicked', { reason: 'You were kicked by the server administrator.' });
-                socket.disconnect(true);
-                kicked++;
-              }
-            }
+      // Find all sockets belonging to this user
+      let kicked = 0;
+      for (const [socketId, userId] of connectedUsers.entries()) {
+        if (userId === user.identityPublicKey) {
+          const socket = io.sockets.sockets.get(socketId);
+          if (socket) {
+            socket.emit('server:kicked', { reason: 'You were kicked by the server administrator.' });
+            socket.disconnect(true);
+            kicked++;
           }
-
-          if (kicked > 0) {
-            log.ok(`Kicked "${user.displayName}" (@${user.username}) — ${kicked} session(s) disconnected.`);
-          } else {
-            log.warn(`"@${targetUsername}" is not currently connected.`);
-          }
-          resolve();
         }
-      );
-    });
+      }
+
+      if (kicked > 0) {
+        log.ok(`Kicked "${user.displayName}" (@${user.username}) — ${kicked} session(s) disconnected.`);
+      } else {
+        log.warn(`"${user.displayName}" (@${user.username}) is not currently connected.`);
+      }
+    } catch (err) {
+      log.error('Failed to kick user:', err.message);
+    }
   },
 };

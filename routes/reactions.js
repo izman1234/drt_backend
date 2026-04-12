@@ -50,9 +50,9 @@ module.exports = (io) => {
 
           // Fetch updated reactions for the message
           db.all(
-            `SELECT emoji, COUNT(*) as count, GROUP_CONCAT(u.id) as userIds, GROUP_CONCAT(u.displayName) as userNames
+            `SELECT emoji, COUNT(*) as count, GROUP_CONCAT(u.identityPublicKey) as userIds, GROUP_CONCAT(u.displayName) as userNames
              FROM reactions r
-             JOIN users u ON r.userId = u.id
+             JOIN users u ON r.userId = u.identityPublicKey
              WHERE r.messageId = ?
              GROUP BY emoji
              ORDER BY r.createdAt ASC`,
@@ -97,9 +97,9 @@ module.exports = (io) => {
             if (row && row.count === 0) {
               // No more reactions with this emoji, fetch all remaining reactions
               db.all(
-                `SELECT emoji, COUNT(*) as count, GROUP_CONCAT(u.id) as userIds, GROUP_CONCAT(u.displayName) as userNames
+                `SELECT emoji, COUNT(*) as count, GROUP_CONCAT(u.identityPublicKey) as userIds, GROUP_CONCAT(u.displayName) as userNames
                  FROM reactions r
-                 JOIN users u ON r.userId = u.id
+                 JOIN users u ON r.userId = u.identityPublicKey
                  WHERE r.messageId = ?
                  GROUP BY emoji
                  ORDER BY r.createdAt ASC`,
@@ -123,9 +123,9 @@ module.exports = (io) => {
             } else {
               // Fetch remaining reactions
               db.all(
-                `SELECT emoji, COUNT(*) as count, GROUP_CONCAT(u.id) as userIds, GROUP_CONCAT(u.displayName) as userNames
+                `SELECT emoji, COUNT(*) as count, GROUP_CONCAT(u.identityPublicKey) as userIds, GROUP_CONCAT(u.displayName) as userNames
                  FROM reactions r
-                 JOIN users u ON r.userId = u.id
+                 JOIN users u ON r.userId = u.identityPublicKey
                  WHERE r.messageId = ?
                  GROUP BY emoji
                  ORDER BY r.createdAt ASC`,

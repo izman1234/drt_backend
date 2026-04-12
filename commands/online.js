@@ -21,7 +21,7 @@ module.exports = {
     return new Promise((resolve) => {
       const placeholders = onlineIds.map(() => '?').join(',');
       db.all(
-        `SELECT id, username, displayName, status FROM users WHERE id IN (${placeholders})`,
+        `SELECT identityPublicKey, username, displayName, status FROM users WHERE identityPublicKey IN (${placeholders})`,
         onlineIds,
         (err, rows) => {
           if (err) {
@@ -34,7 +34,9 @@ module.exports = {
           console.log('');
           for (const u of rows) {
             const statusText = u.status === 'away' ? '\x1b[33maway\x1b[0m' : '\x1b[32monline\x1b[0m';
-            console.log(`  \x1b[32m●\x1b[0m ${u.displayName} \x1b[90m(@${u.username})\x1b[0m [${statusText}]`);
+            const pk = u.identityPublicKey;
+            const short = pk.length > 12 ? pk.slice(0, 6) + '…' + pk.slice(-6) : pk;
+            console.log(`  \x1b[32m●\x1b[0m ${u.displayName} \x1b[90m(@${u.username}) (key: ${short})\x1b[0m [${statusText}]`);
           }
           console.log('');
           resolve();

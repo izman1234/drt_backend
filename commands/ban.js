@@ -1,20 +1,22 @@
 /**
  * ban — Ban or unban a user. Banned users cannot connect or register.
- * Subcommands: add <username> [reason], remove <username>, list
+ * Subcommands: add <username> [reason], remove <username|publicKey>, list
  */
 'use strict';
+
+const { disambiguateUser } = require('./disambiguate');
 
 module.exports = {
   name: 'ban',
   aliases: ['unban'],
   description: 'Ban/unban a user (add / remove / list)',
-  usage: '/ban <add|remove|list> [username] [reason]',
+  usage: '/ban <add|remove|list> [username|publicKey] [reason]',
 
   async execute(args, ctx) {
     const { db, io, log, connectedUsers } = ctx;
 
     if (args.length === 0) {
-      log.warn('Usage: /ban <add|remove|list> [username] [reason]');
+      log.warn('Usage: /ban <add|remove|list> [username|publicKey] [reason]');
       return;
     }
 
@@ -35,45 +37,58 @@ module.exports = {
 
     if (sub === 'add') {
       if (args.length < 2) { log.warn('Usage: /ban add <username> [reason]'); return; }
-      const username = args[1];
+      const target = args[1];
       const reason = args.slice(2).join(' ') || null;
 
       try {
+        // Disambiguate by username
+        const user = await disambiguateUser(db, target, log);
+        if (!user) return;
+
         await dbRun(
-          'INSERT OR REPLACE INTO bans (username, reason) VALUES (?, ?)',
-          [username, reason]
+          'INSERT OR REPLACE INTO bans (publicKey, reason) VALUES (?, ?)',
+          [user.identityPublicKey, reason]
         );
-        log.ok(`"${username}" has been banned.${reason ? ` Reason: ${reason}` : ''}`);
+        log.ok(`"${user.displayName}" (@${user.username}) has been banned.${reason ? ` Reason: ${reason}` : ''}`);
 
         // Kick them if they're currently connected
-        const user = await dbGet('SELECT id FROM users WHERE username = ?', [username]);
-        if (user) {
-          let kicked = 0;
-          for (const [socketId, userId] of connectedUsers.entries()) {
-            if (userId === user.id) {
-              const socket = io.sockets.sockets.get(socketId);
-              if (socket) {
-                socket.emit('server:kicked', { reason: `You have been banned.${reason ? ' Reason: ' + reason : ''}` });
-                socket.disconnect(true);
-                kicked++;
-              }
+        let kicked = 0;
+        for (const [socketId, userId] of connectedUsers.entries()) {
+          if (userId === user.identityPublicKey) {
+            const socket = io.sockets.sockets.get(socketId);
+            if (socket) {
+              socket.emit('server:kicked', { reason: `You have been banned.${reason ? ' Reason: ' + reason : ''}` });
+              socket.disconnect(true);
+              kicked++;
             }
           }
-          if (kicked > 0) log.info(`  └─ Disconnected ${kicked} active session(s).`);
         }
+        if (kicked > 0) log.info(`  └─ Disconnected ${kicked} active session(s).`);
       } catch (err) {
         log.error('Failed to ban user:', err.message);
       }
 
     } else if (sub === 'remove') {
-      if (args.length < 2) { log.warn('Usage: /ban remove <username>'); return; }
-      const username = args[1];
+      if (args.length < 2) { log.warn('Usage: /ban remove <username|publicKey>'); return; }
+      const target = args[1];
+
       try {
-        const result = await dbRun('DELETE FROM bans WHERE username = ?', [username]);
+        // First try direct publicKey match
+        let result = await dbRun('DELETE FROM bans WHERE publicKey = ?', [target]);
         if (result.changes > 0) {
-          log.ok(`"${username}" has been unbanned.`);
+          log.ok(`Unbanned public key "${target}".`);
+          return;
+        }
+
+        // Otherwise treat as username and disambiguate
+        const user = await disambiguateUser(db, target, log);
+        if (!user) return;
+
+        result = await dbRun('DELETE FROM bans WHERE publicKey = ?', [user.identityPublicKey]);
+        if (result.changes > 0) {
+          log.ok(`"${user.displayName}" (@${user.username}) has been unbanned.`);
         } else {
-          log.warn(`"${username}" is not banned.`);
+          log.warn(`"${user.displayName}" (@${user.username}) is not banned.`);
         }
       } catch (err) {
         log.error('Failed to unban user:', err.message);
@@ -81,7 +96,11 @@ module.exports = {
 
     } else if (sub === 'list') {
       try {
-        const rows = await dbAll('SELECT username, reason, bannedAt FROM bans ORDER BY username');
+        const rows = await dbAll(
+          `SELECT b.publicKey, b.reason, b.bannedAt, u.username, u.displayName
+           FROM bans b LEFT JOIN users u ON u.identityPublicKey = b.publicKey
+           ORDER BY b.bannedAt`
+        );
         if (rows.length === 0) {
           console.log('  No banned users.');
           return;
@@ -91,7 +110,9 @@ module.exports = {
         console.log('');
         for (const r of rows) {
           const reason = r.reason ? ` — ${r.reason}` : '';
-          console.log(`  \x1b[31mx\x1b[0m ${r.username}${reason} \x1b[90m(${r.bannedAt})\x1b[0m`);
+          const name = r.username ? `${r.displayName} (@${r.username})` : r.publicKey;
+          const time = new Date(r.bannedAt + 'Z').toLocaleString();
+          console.log(`  \x1b[31mx\x1b[0m ${name}${reason} \x1b[90m(${time})\x1b[0m`);
         }
         console.log('');
       } catch (err) {

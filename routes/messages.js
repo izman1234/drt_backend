@@ -51,12 +51,9 @@ const verifyToken = (req, res, next) => {
 
 // Middleware to reject banned users (runs after verifyToken)
 const checkBan = (req, res, next) => {
-  db.get('SELECT username FROM users WHERE id = ?', [req.userId], (err, user) => {
-    if (err || !user) return res.status(401).json({ success: false, message: 'User not found' });
-    db.get('SELECT 1 FROM bans WHERE username = ?', [user.username], (_err2, ban) => {
-      if (ban) return res.status(403).json({ success: false, message: 'You are banned from this server' });
-      next();
-    });
+  db.get('SELECT 1 FROM bans WHERE publicKey = ?', [req.userId], (_err, ban) => {
+    if (ban) return res.status(403).json({ success: false, message: 'You are banned from this server' });
+    next();
   });
 };
 
@@ -110,13 +107,13 @@ module.exports = (io) => {
               // Fetch the newly created message with user details
               db.get(
                 `SELECT m.id, m.content, m.image, m.createdAt, m.edited_at, m.replyTo, m.signature,
-                        u.username, u.displayName, u.id as userId, u.nameColor, u.profilePicture, u.identityPublicKey,
+                        u.username, u.displayName, u.identityPublicKey as userId, u.nameColor, u.profilePicture, u.identityPublicKey,
                         rm.id as repliedToId, rm.content as repliedToContent, rm.image as repliedToImage,
-                        ru.id as repliedToUserId, ru.username as repliedToUser, ru.displayName as repliedToDisplay, ru.nameColor as repliedToNameColor, ru.profilePicture as repliedToProfilePicture
+                        ru.identityPublicKey as repliedToUserId, ru.username as repliedToUser, ru.displayName as repliedToDisplay, ru.nameColor as repliedToNameColor, ru.profilePicture as repliedToProfilePicture
                  FROM messages m
-                 JOIN users u ON m.userId = u.id
+                 JOIN users u ON m.userId = u.identityPublicKey
                  LEFT JOIN messages rm ON m.replyTo = rm.id
-                 LEFT JOIN users ru ON rm.userId = ru.id
+                 LEFT JOIN users ru ON rm.userId = ru.identityPublicKey
                  WHERE m.id = ?`,
                 [messageId],
                 (fetchErr, message) => {
@@ -139,7 +136,7 @@ module.exports = (io) => {
 
     // If a signature and signingPayload are provided, verify server-side before storing
     if (signature && signingPayload) {
-      db.get('SELECT identityPublicKey FROM users WHERE id = ?', [req.userId], async (err, user) => {
+      db.get('SELECT identityPublicKey FROM users WHERE identityPublicKey = ?', [req.userId], async (err, user) => {
         if (!err && user && user.identityPublicKey) {
           const isValid = await verifyStringSignature(signingPayload, signature, user.identityPublicKey);
           if (!isValid) {
@@ -161,13 +158,13 @@ module.exports = (io) => {
     const beforeRowId = req.query.beforeRowId; // Use rowid for pagination (more reliable than timestamp)
     
     let query = `SELECT m.rowid, m.id, m.content, m.image, m.createdAt, m.edited_at, m.replyTo, m.signature,
-                        u.username, u.displayName, u.id as userId, u.nameColor, u.profilePicture, u.identityPublicKey,
+                        u.username, u.displayName, u.identityPublicKey as userId, u.nameColor, u.profilePicture, u.identityPublicKey,
                         rm.id as repliedToId, rm.content as repliedToContent, rm.image as repliedToImage,
-                        ru.id as repliedToUserId, ru.username as repliedToUser, ru.displayName as repliedToDisplay, ru.nameColor as repliedToNameColor, ru.profilePicture as repliedToProfilePicture
+                        ru.identityPublicKey as repliedToUserId, ru.username as repliedToUser, ru.displayName as repliedToDisplay, ru.nameColor as repliedToNameColor, ru.profilePicture as repliedToProfilePicture
                  FROM messages m
-                 JOIN users u ON m.userId = u.id
+                 JOIN users u ON m.userId = u.identityPublicKey
                  LEFT JOIN messages rm ON m.replyTo = rm.id
-                 LEFT JOIN users ru ON rm.userId = ru.id
+                 LEFT JOIN users ru ON rm.userId = ru.identityPublicKey
                  WHERE m.channelId = ?`;
     
     const params = [req.params.channelId];
@@ -204,7 +201,7 @@ module.exports = (io) => {
       db.all(
         `SELECT emoji, messageId, COUNT(*) as count, GROUP_CONCAT(r.userId) as userIds, GROUP_CONCAT(u.displayName) as userNames
          FROM reactions r
-         JOIN users u ON r.userId = u.id
+         JOIN users u ON r.userId = u.identityPublicKey
          WHERE r.messageId IN (${placeholders})
          GROUP BY messageId, emoji
          ORDER BY r.createdAt ASC`,
@@ -279,13 +276,13 @@ module.exports = (io) => {
         // Fetch the updated message with user details
         db.get(
           `SELECT m.id, m.content, m.image, m.createdAt, m.edited_at, m.replyTo,
-                  u.username, u.displayName, u.id as userId, u.nameColor, u.profilePicture,
+                  u.username, u.displayName, u.identityPublicKey as userId, u.nameColor, u.profilePicture,
                   rm.id as repliedToId, rm.content as repliedToContent, rm.image as repliedToImage,
-                  ru.id as repliedToUserId, ru.username as repliedToUser, ru.displayName as repliedToDisplay, ru.nameColor as repliedToNameColor, ru.profilePicture as repliedToProfilePicture
+                  ru.identityPublicKey as repliedToUserId, ru.username as repliedToUser, ru.displayName as repliedToDisplay, ru.nameColor as repliedToNameColor, ru.profilePicture as repliedToProfilePicture
            FROM messages m
-           JOIN users u ON m.userId = u.id
+           JOIN users u ON m.userId = u.identityPublicKey
            LEFT JOIN messages rm ON m.replyTo = rm.id
-           LEFT JOIN users ru ON rm.userId = ru.id
+           LEFT JOIN users ru ON rm.userId = ru.identityPublicKey
            WHERE m.id = ?`,
           [req.params.messageId],
           (fetchErr, updatedMessage) => {

@@ -4,6 +4,9 @@
  * 
  * All crypto verification uses Ed25519 via libsodium.
  * No plaintext secrets are ever stored on the server.
+ * 
+ * Users are identified by their Ed25519 public key (identityPublicKey).
+ * Usernames are not unique — multiple users may share the same username.
  */
 const express = require('express');
 const jwt = require('jsonwebtoken');
@@ -69,6 +72,15 @@ function dbGet(sql, params = []) {
   });
 }
 
+function dbAll(sql, params = []) {
+  return new Promise((resolve, reject) => {
+    db.all(sql, params, (err, rows) => {
+      if (err) reject(err);
+      else resolve(rows);
+    });
+  });
+}
+
 function dbRun(sql, params = []) {
   return new Promise((resolve, reject) => {
     db.run(sql, params, function (err) {
@@ -93,15 +105,15 @@ module.exports = (io) => {
         return res.status(400).json({ success: false, message: 'Missing required fields: username, displayName, identityPublicKey' });
       }
 
-      // ── Ban check ──────────────────────────────────────────────────
-      const ban = await dbGet('SELECT reason FROM bans WHERE username = ?', [username]);
+      // ── Ban check (by public key) ─────────────────────────────────
+      const ban = await dbGet('SELECT reason FROM bans WHERE publicKey = ?', [identityPublicKey]);
       if (ban) {
         return res.status(403).json({ success: false, message: 'You are banned from this server.' + (ban.reason ? ' Reason: ' + ban.reason : '') });
       }
 
-      // ── Whitelist check ────────────────────────────────────────────
+      // ── Whitelist check (by public key) ────────────────────────────
       if (config.WHITELIST) {
-        const allowed = await dbGet('SELECT 1 FROM whitelist WHERE username = ?', [username]);
+        const allowed = await dbGet('SELECT 1 FROM whitelist WHERE publicKey = ?', [identityPublicKey]);
         if (!allowed) {
           return res.status(403).json({ success: false, message: 'This server has whitelist enabled. You are not whitelisted.' });
         }
@@ -120,30 +132,27 @@ module.exports = (io) => {
         }
       }
 
-      const userId = uuidv4();
-
       try {
         await dbRun(
-          `INSERT INTO users (id, username, displayName, identityPublicKey, recoveryPublicKey, authVersion)
-           VALUES (?, ?, ?, ?, ?, 1)`,
-          [userId, username, displayName, identityPublicKey, recoveryPublicKey || null]
+          `INSERT INTO users (identityPublicKey, username, displayName, recoveryPublicKey, authVersion)
+           VALUES (?, ?, ?, ?, 1)`,
+          [identityPublicKey, username, displayName, recoveryPublicKey || null]
         );
       } catch (dbErr) {
         if (dbErr.message && dbErr.message.includes('UNIQUE')) {
-          // If the existing user previously left, allow them to rejoin
-          // by resetting their leftServer flag (same identity key required)
+          // Public key already registered — check if user previously left
           const existing = await dbGet(
-            'SELECT id, identityPublicKey, leftServer FROM users WHERE username = ?',
-            [username]
+            'SELECT identityPublicKey, leftServer FROM users WHERE identityPublicKey = ?',
+            [identityPublicKey]
           );
-          if (existing && existing.leftServer === 1 && existing.identityPublicKey === identityPublicKey) {
+          if (existing && existing.leftServer === 1) {
             await dbRun(
-              'UPDATE users SET leftServer = 0, displayName = ?, recoveryPublicKey = ? WHERE id = ?',
-              [displayName, recoveryPublicKey || null, existing.id]
+              'UPDATE users SET leftServer = 0, username = ?, displayName = ?, recoveryPublicKey = ? WHERE identityPublicKey = ?',
+              [username, displayName, recoveryPublicKey || null, identityPublicKey]
             );
-            return res.json({ success: true, userId: existing.id, username, displayName });
+            return res.json({ success: true, userId: identityPublicKey, username, displayName });
           }
-          return res.status(409).json({ success: false, message: 'Username already exists on this server' });
+          return res.status(409).json({ success: false, message: 'This identity is already registered on this server' });
         }
         throw dbErr;
       }
@@ -151,10 +160,10 @@ module.exports = (io) => {
       // Audit log
       await dbRun(
         'INSERT INTO key_audit_log (id, userId, action, newPublicKeyHash, createdAt) VALUES (?, ?, ?, ?, ?)',
-        [uuidv4(), userId, 'registration', hashPublicKey(identityPublicKey), new Date().toISOString()]
+        [uuidv4(), identityPublicKey, 'registration', hashPublicKey(identityPublicKey), new Date().toISOString()]
       ).catch(e => log.error('Audit log error:', e.message));
 
-      res.json({ success: true, userId, username, displayName });
+      res.json({ success: true, userId: identityPublicKey, username, displayName });
     } catch (err) {
       log.error('Identity register error:', err);
       res.status(500).json({ success: false, message: 'Registration failed' });
@@ -163,7 +172,9 @@ module.exports = (io) => {
 
   // ────────────────────────────────────────────────────────────────────
   // POST /challenge — Request a nonce for challenge-response auth
-  // Body: { username, type: 'identity' | 'recovery' }
+  // Body: { identityPublicKey, type: 'identity' | 'recovery' }
+  //   For recovery-type challenges, `username` can be used instead of identityPublicKey
+  //   (the user may not know their public key during recovery)
   // ────────────────────────────────────────────────────────────────────
   router.post('/challenge', async (req, res) => {
     try {
@@ -172,28 +183,48 @@ module.exports = (io) => {
         return res.status(429).json({ success: false, message: 'Too many auth attempts. Try again later.' });
       }
 
-      const { username, type = 'identity' } = req.body;
-      if (!username) {
-        return res.status(400).json({ success: false, message: 'Username is required' });
+      const { identityPublicKey, username, type = 'identity' } = req.body;
+
+      // For identity auth, identityPublicKey is required.
+      // For recovery, allow lookup by username as fallback.
+      let resolvedPublicKey = identityPublicKey;
+      if (!resolvedPublicKey) {
+        if (type === 'recovery' && username) {
+          // Look up by username — find a user with a recovery key
+          const candidates = await dbAll(
+            'SELECT identityPublicKey FROM users WHERE username = ? AND recoveryPublicKey IS NOT NULL AND leftServer = 0',
+            [username]
+          );
+          if (candidates.length === 0) {
+            return res.status(404).json({ success: false, message: 'No recoverable user found with that username' });
+          }
+          // If multiple users share the name, we issue a challenge and let the
+          // download/rotate step figure out which recovery key matches.
+          resolvedPublicKey = candidates[0].identityPublicKey;
+          // Store all candidate keys so download can try each
+          res._recoveryCandidates = candidates.map(c => c.identityPublicKey);
+        } else {
+          return res.status(400).json({ success: false, message: 'identityPublicKey is required' });
+        }
       }
 
-      // ── Ban check ──────────────────────────────────────────────────
-      const ban = await dbGet('SELECT reason FROM bans WHERE username = ?', [username]);
+      // ── Ban check (by public key) ─────────────────────────────────
+      const ban = await dbGet('SELECT reason FROM bans WHERE publicKey = ?', [resolvedPublicKey]);
       if (ban) {
         return res.status(403).json({ success: false, message: 'You are banned from this server.' + (ban.reason ? ' Reason: ' + ban.reason : '') });
       }
 
-      // ── Whitelist check ────────────────────────────────────────────
+      // ── Whitelist check (by public key) ────────────────────────────
       if (config.WHITELIST) {
-        const allowed = await dbGet('SELECT 1 FROM whitelist WHERE username = ?', [username]);
+        const allowed = await dbGet('SELECT 1 FROM whitelist WHERE publicKey = ?', [resolvedPublicKey]);
         if (!allowed) {
           return res.status(403).json({ success: false, message: 'This server has whitelist enabled. You are not whitelisted.' });
         }
       }
 
       const user = await dbGet(
-        'SELECT id, identityPublicKey, recoveryPublicKey, authVersion FROM users WHERE username = ?',
-        [username]
+        'SELECT identityPublicKey, recoveryPublicKey, authVersion FROM users WHERE identityPublicKey = ?',
+        [resolvedPublicKey]
       );
 
       if (!user) {
@@ -216,8 +247,8 @@ module.exports = (io) => {
       const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
 
       await dbRun(
-        'INSERT INTO auth_challenges (id, username, challenge, type, expiresAt) VALUES (?, ?, ?, ?, ?)',
-        [challengeId, username, challenge, type, expiresAt]
+        'INSERT INTO auth_challenges (id, publicKey, challenge, type, expiresAt) VALUES (?, ?, ?, ?, ?)',
+        [challengeId, resolvedPublicKey, challenge, type, expiresAt]
       );
 
       res.json({ success: true, challengeId, challenge });
@@ -262,8 +293,8 @@ module.exports = (io) => {
       await dbRun('UPDATE auth_challenges SET used = 1 WHERE id = ?', [challengeId]);
 
       const user = await dbGet(
-        'SELECT id, username, displayName, identityPublicKey, recoveryPublicKey FROM users WHERE username = ?',
-        [challenge.username]
+        'SELECT identityPublicKey, username, displayName, recoveryPublicKey FROM users WHERE identityPublicKey = ?',
+        [challenge.publicKey]
       );
 
       if (!user) {
@@ -282,24 +313,24 @@ module.exports = (io) => {
       const isValid = await verifySignature(challenge.challenge, signature, publicKey);
 
       if (!isValid) {
-        log.warn(`Auth failure for ${challenge.username} from ${ip} (type: ${challenge.type})`);
+        log.warn(`Auth failure for ${user.username} (key: ${hashPublicKey(challenge.publicKey)}) from ${ip} (type: ${challenge.type})`);
         return res.status(401).json({ success: false, message: 'Signature verification failed' });
       }
 
-      // Issue JWT (7 day expiry)
+      // Issue JWT (7 day expiry) — userId is the public key
       const token = jwt.sign(
-        { userId: user.id, authType: challenge.type },
+        { userId: user.identityPublicKey, authType: challenge.type },
         JWT_SECRET,
         { expiresIn: '7d' }
       );
 
       // Clear leftServer flag if user is re-joining
-      db.run('UPDATE users SET leftServer = 0 WHERE id = ?', [user.id]);
+      db.run('UPDATE users SET leftServer = 0 WHERE identityPublicKey = ?', [user.identityPublicKey]);
 
       res.json({
         success: true,
         token,
-        userId: user.id,
+        userId: user.identityPublicKey,
         username: user.username,
         displayName: user.displayName,
         identityPublicKey: user.identityPublicKey
@@ -311,13 +342,13 @@ module.exports = (io) => {
   });
 
   // ────────────────────────────────────────────────────────────────────
-  // GET /check/:username — Check if user exists and auth version
+  // GET /check/:publicKey — Check if a public key is registered
   // ────────────────────────────────────────────────────────────────────
-  router.get('/check/:username', async (req, res) => {
+  router.get('/check/:publicKey', async (req, res) => {
     try {
       const user = await dbGet(
-        'SELECT id, authVersion, identityPublicKey FROM users WHERE username = ?',
-        [req.params.username]
+        'SELECT identityPublicKey, authVersion FROM users WHERE identityPublicKey = ?',
+        [req.params.publicKey]
       );
       if (!user) {
         return res.json({ success: true, exists: false });
@@ -325,8 +356,8 @@ module.exports = (io) => {
       res.json({
         success: true,
         exists: true,
-        authVersion: user.authVersion || 0,
-        identityPublicKey: user.identityPublicKey || null
+        authVersion: user.authVersion || 1,
+        identityPublicKey: user.identityPublicKey
       });
     } catch (err) {
       res.status(500).json({ success: false, message: 'Server error' });
@@ -348,7 +379,7 @@ module.exports = (io) => {
         return res.status(400).json({ success: false, message: 'Backup blob exceeds 1 MB limit' });
       }
 
-      await dbRun('UPDATE users SET backupBlob = ? WHERE id = ?', [blobStr, req.userId]);
+      await dbRun('UPDATE users SET backupBlob = ? WHERE identityPublicKey = ?', [blobStr, req.userId]);
       res.json({ success: true, message: 'Backup blob stored' });
     } catch (err) {
       log.error('Backup blob upload error:', err);
@@ -358,13 +389,13 @@ module.exports = (io) => {
 
   // ────────────────────────────────────────────────────────────────────
   // POST /backup-blob/download — Download backup blob (recovery-key auth)
-  // Body: { username, challengeId, signature }
+  // Body: { identityPublicKey | username, challengeId, signature }
   // Requires a recovery-type challenge.
   // ────────────────────────────────────────────────────────────────────
   router.post('/backup-blob/download', async (req, res) => {
     try {
-      const { username, challengeId, signature } = req.body;
-      if (!username || !challengeId || !signature) {
+      const { identityPublicKey, username, challengeId, signature } = req.body;
+      if ((!identityPublicKey && !username) || !challengeId || !signature) {
         return res.status(400).json({ success: false, message: 'Missing required fields' });
       }
 
@@ -383,25 +414,43 @@ module.exports = (io) => {
 
       await dbRun('UPDATE auth_challenges SET used = 1 WHERE id = ?', [challengeId]);
 
-      const user = await dbGet(
-        'SELECT recoveryPublicKey, backupBlob FROM users WHERE username = ?',
-        [username]
-      );
+      // Build candidate list — either a single user by public key, or
+      // all users sharing the given username.
+      let candidates;
+      if (identityPublicKey) {
+        const u = await dbGet(
+          'SELECT identityPublicKey, recoveryPublicKey, backupBlob FROM users WHERE identityPublicKey = ?',
+          [identityPublicKey]
+        );
+        candidates = u ? [u] : [];
+      } else {
+        candidates = await dbAll(
+          'SELECT identityPublicKey, recoveryPublicKey, backupBlob FROM users WHERE username = ? AND recoveryPublicKey IS NOT NULL AND leftServer = 0',
+          [username]
+        );
+      }
 
-      if (!user || !user.recoveryPublicKey) {
+      if (candidates.length === 0) {
         return res.status(404).json({ success: false, message: 'User or recovery key not found' });
       }
 
-      const isValid = await verifySignature(challenge.challenge, signature, user.recoveryPublicKey);
-      if (!isValid) {
+      // Try each candidate's recovery key to find the matching one
+      let matchedUser = null;
+      for (const candidate of candidates) {
+        if (!candidate.recoveryPublicKey) continue;
+        const isValid = await verifySignature(challenge.challenge, signature, candidate.recoveryPublicKey);
+        if (isValid) { matchedUser = candidate; break; }
+      }
+
+      if (!matchedUser) {
         return res.status(401).json({ success: false, message: 'Recovery key verification failed' });
       }
 
-      if (!user.backupBlob) {
+      if (!matchedUser.backupBlob) {
         return res.status(404).json({ success: false, message: 'No backup blob stored on this server' });
       }
 
-      res.json({ success: true, blob: user.backupBlob });
+      res.json({ success: true, blob: matchedUser.backupBlob });
     } catch (err) {
       log.error('Backup blob download error:', err);
       res.status(500).json({ success: false, message: 'Failed to retrieve backup' });
@@ -410,14 +459,14 @@ module.exports = (io) => {
 
   // ────────────────────────────────────────────────────────────────────
   // POST /rotate-key — Rotate identity key (recovery-key auth required)
-  // Body: { username, newIdentityPublicKey, challengeId, signature }
+  // Body: { identityPublicKey | username, newIdentityPublicKey, challengeId, signature }
   // ────────────────────────────────────────────────────────────────────
   router.post('/rotate-key', async (req, res) => {
     try {
       await ready();
-      const { username, newIdentityPublicKey, challengeId, signature } = req.body;
+      const { identityPublicKey, username, newIdentityPublicKey, challengeId, signature } = req.body;
 
-      if (!username || !newIdentityPublicKey || !challengeId || !signature) {
+      if ((!identityPublicKey && !username) || !newIdentityPublicKey || !challengeId || !signature) {
         return res.status(400).json({ success: false, message: 'Missing required fields' });
       }
 
@@ -441,32 +490,66 @@ module.exports = (io) => {
 
       await dbRun('UPDATE auth_challenges SET used = 1 WHERE id = ?', [challengeId]);
 
-      const user = await dbGet(
-        'SELECT id, identityPublicKey, recoveryPublicKey FROM users WHERE username = ?',
-        [username]
-      );
+      // Build candidate list
+      let candidates;
+      if (identityPublicKey) {
+        const u = await dbGet(
+          'SELECT identityPublicKey, recoveryPublicKey FROM users WHERE identityPublicKey = ?',
+          [identityPublicKey]
+        );
+        candidates = u ? [u] : [];
+      } else {
+        candidates = await dbAll(
+          'SELECT identityPublicKey, recoveryPublicKey FROM users WHERE username = ? AND recoveryPublicKey IS NOT NULL AND leftServer = 0',
+          [username]
+        );
+      }
 
-      if (!user || !user.recoveryPublicKey) {
+      if (candidates.length === 0) {
         return res.status(404).json({ success: false, message: 'User not found or no recovery key' });
       }
 
-      const isValid = await verifySignature(challenge.challenge, signature, user.recoveryPublicKey);
-      if (!isValid) {
+      // Find the candidate whose recovery key matches the signature
+      let user = null;
+      for (const candidate of candidates) {
+        if (!candidate.recoveryPublicKey) continue;
+        const isValid = await verifySignature(challenge.challenge, signature, candidate.recoveryPublicKey);
+        if (isValid) { user = candidate; break; }
+      }
+
+      if (!user) {
         return res.status(401).json({ success: false, message: 'Recovery key verification failed' });
       }
 
-      const oldKeyHash = user.identityPublicKey ? hashPublicKey(user.identityPublicKey) : 'none';
+      const oldKey = user.identityPublicKey;
+      const oldKeyHash = hashPublicKey(oldKey);
       const newKeyHash = hashPublicKey(newIdentityPublicKey);
 
-      await dbRun(
-        'UPDATE users SET identityPublicKey = ? WHERE id = ?',
-        [newIdentityPublicKey, user.id]
-      );
+      // Update all FK references from old key to new key in a transaction
+      await dbRun('BEGIN TRANSACTION');
+      try {
+        await dbRun('UPDATE messages SET userId = ? WHERE userId = ?', [newIdentityPublicKey, oldKey]);
+        await dbRun('UPDATE channel_members SET userId = ? WHERE userId = ?', [newIdentityPublicKey, oldKey]);
+        await dbRun('UPDATE reactions SET userId = ? WHERE userId = ?', [newIdentityPublicKey, oldKey]);
+        await dbRun('UPDATE channel_reads SET userId = ? WHERE userId = ?', [newIdentityPublicKey, oldKey]);
+        await dbRun('UPDATE channels SET creatorId = ? WHERE creatorId = ?', [newIdentityPublicKey, oldKey]);
+        await dbRun('UPDATE key_audit_log SET userId = ? WHERE userId = ?', [newIdentityPublicKey, oldKey]);
+        // Update bans/owners/whitelist if the old key was in them
+        await dbRun('UPDATE bans SET publicKey = ? WHERE publicKey = ?', [newIdentityPublicKey, oldKey]);
+        await dbRun('UPDATE owners SET publicKey = ? WHERE publicKey = ?', [newIdentityPublicKey, oldKey]);
+        await dbRun('UPDATE whitelist SET publicKey = ? WHERE publicKey = ?', [newIdentityPublicKey, oldKey]);
+        // Finally update the user's primary key
+        await dbRun('UPDATE users SET identityPublicKey = ? WHERE identityPublicKey = ?', [newIdentityPublicKey, oldKey]);
+        await dbRun('COMMIT');
+      } catch (txErr) {
+        await dbRun('ROLLBACK').catch(() => {});
+        throw txErr;
+      }
 
       // Audit trail
       await dbRun(
         'INSERT INTO key_audit_log (id, userId, action, oldPublicKeyHash, newPublicKeyHash, createdAt) VALUES (?, ?, ?, ?, ?, ?)',
-        [uuidv4(), user.id, 'key_rotation', oldKeyHash, newKeyHash, new Date().toISOString()]
+        [uuidv4(), newIdentityPublicKey, 'key_rotation', oldKeyHash, newKeyHash, new Date().toISOString()]
       ).catch(e => log.error('Audit log error:', e.message));
 
       res.json({ success: true, message: 'Identity key rotated successfully' });

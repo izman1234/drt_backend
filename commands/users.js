@@ -14,7 +14,7 @@ module.exports = {
 
     return new Promise((resolve) => {
       db.all(
-        `SELECT id, username, displayName, status, nameColor, createdAt
+        `SELECT identityPublicKey, username, displayName, status, nameColor, createdAt
          FROM users WHERE leftServer = 0 ORDER BY username`,
         (err, rows) => {
           if (err) {
@@ -34,7 +34,9 @@ module.exports = {
               ? '\x1b[32m●\x1b[0m'
               : '\x1b[90m○\x1b[0m';
             const statusText = u.status || 'offline';
-            console.log(`  ${statusIcon} ${u.displayName} \x1b[90m(@${u.username}) [${statusText}]\x1b[0m`);
+            const pk = u.identityPublicKey;
+            const short = pk.length > 12 ? pk.slice(0, 6) + '…' + pk.slice(-6) : pk;
+            console.log(`  ${statusIcon} ${u.displayName} \x1b[90m(@${u.username}) (key: ${short}) [${statusText}]\x1b[0m`);
           }
           console.log('');
           resolve();

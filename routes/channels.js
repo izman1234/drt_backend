@@ -134,8 +134,8 @@ router.post('/:channelId/leave', verifyToken, (req, res) => {
 // Get channel members
 router.get('/:channelId/members', verifyToken, (req, res) => {
   db.all(
-    `SELECT u.id, u.username, u.displayName FROM users u
-     JOIN channel_members cm ON u.id = cm.userId
+    `SELECT u.identityPublicKey as id, u.username, u.displayName FROM users u
+     JOIN channel_members cm ON u.identityPublicKey = cm.userId
      WHERE cm.channelId = ?`,
     [req.params.channelId],
     (err, members) => {

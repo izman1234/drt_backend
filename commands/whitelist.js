@@ -1,6 +1,6 @@
 /**
  * whitelist — Manage the server whitelist.
- * Subcommands: add <username>, remove <username>, list, on, off
+ * Subcommands: add <publicKey>, remove <publicKey>, list, on, off
  */
 'use strict';
 
@@ -8,14 +8,14 @@ module.exports = {
   name: 'whitelist',
   aliases: ['wl'],
   description: 'Manage the server whitelist (add / remove / list / on / off)',
-  usage: '/whitelist <add|remove|list|on|off> [username]',
+  usage: '/whitelist <add|remove|list|on|off> [publicKey]',
 
   async execute(args, ctx) {
     const { db, log } = ctx;
     const config = require('../config');
 
     if (args.length === 0) {
-      log.warn('Usage: /whitelist <add|remove|list|on|off> [username]');
+      log.warn('Usage: /whitelist <add|remove|list|on|off> [publicKey]');
       return;
     }
 
@@ -31,24 +31,24 @@ module.exports = {
       );
 
     if (sub === 'add') {
-      if (args.length < 2) { log.warn('Usage: /whitelist add <username>'); return; }
-      const username = args[1];
+      if (args.length < 2) { log.warn('Usage: /whitelist add <publicKey>'); return; }
+      const publicKey = args[1];
       try {
-        await dbRun('INSERT OR IGNORE INTO whitelist (username) VALUES (?)', [username]);
-        log.ok(`"${username}" added to the whitelist.`);
+        await dbRun('INSERT OR IGNORE INTO whitelist (publicKey) VALUES (?)', [publicKey]);
+        log.ok(`Public key added to the whitelist.`);
       } catch (err) {
         log.error('Failed to add to whitelist:', err.message);
       }
 
     } else if (sub === 'remove') {
-      if (args.length < 2) { log.warn('Usage: /whitelist remove <username>'); return; }
-      const username = args[1];
+      if (args.length < 2) { log.warn('Usage: /whitelist remove <publicKey>'); return; }
+      const publicKey = args[1];
       try {
-        const result = await dbRun('DELETE FROM whitelist WHERE username = ?', [username]);
+        const result = await dbRun('DELETE FROM whitelist WHERE publicKey = ?', [publicKey]);
         if (result.changes > 0) {
-          log.ok(`"${username}" removed from the whitelist.`);
+          log.ok(`Public key removed from the whitelist.`);
         } else {
-          log.warn(`"${username}" is not on the whitelist.`);
+          log.warn(`That public key is not on the whitelist.`);
         }
       } catch (err) {
         log.error('Failed to remove from whitelist:', err.message);
@@ -56,7 +56,11 @@ module.exports = {
 
     } else if (sub === 'list') {
       try {
-        const rows = await dbAll('SELECT username, addedAt FROM whitelist ORDER BY username');
+        const rows = await dbAll(
+          `SELECT w.publicKey, w.addedAt, u.username, u.displayName
+           FROM whitelist w LEFT JOIN users u ON u.identityPublicKey = w.publicKey
+           ORDER BY w.addedAt`
+        );
         const whitelistEnabled = config.WHITELIST;
         console.log('');
         console.log(`  \x1b[1mWhitelist\x1b[0m — ${whitelistEnabled ? '\x1b[32mENABLED\x1b[0m' : '\x1b[90mDISABLED\x1b[0m'}`);
@@ -65,7 +69,11 @@ module.exports = {
           console.log('  No whitelisted users.');
         } else {
           for (const r of rows) {
-            console.log(`  \x1b[32m+\x1b[0m ${r.username} \x1b[90m(added ${r.addedAt})\x1b[0m`);
+            const name = r.username ? `${r.displayName} (@${r.username})` : r.publicKey;
+            const pk = r.publicKey;
+            const short = pk.length > 12 ? pk.slice(0, 6) + '…' + pk.slice(-6) : pk;
+            const time = new Date(r.addedAt + 'Z').toLocaleString();
+            console.log(`  \x1b[32m+\x1b[0m ${name} \x1b[90m(key: ${short}, added ${time})\x1b[0m`);
           }
         }
         console.log('');
@@ -101,7 +109,7 @@ module.exports = {
       }
 
     } else {
-      log.warn('Unknown subcommand. Usage: /whitelist <add|remove|list|on|off> [username]');
+      log.warn('Unknown subcommand. Usage: /whitelist <add|remove|list|on|off> [publicKey]');
     }
   },
 };

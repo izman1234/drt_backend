@@ -24,7 +24,7 @@ module.exports = (io) => {
 
   // Get user profile
   router.get('/profile', verifyToken, (req, res) => {
-    db.get('SELECT id, username, displayName, isOnline, profilePicture, nameColor, bio, createdAt FROM users WHERE id = ?', [req.userId], (err, user) => {
+    db.get('SELECT identityPublicKey as id, username, displayName, isOnline, profilePicture, nameColor, bio, createdAt FROM users WHERE identityPublicKey = ?', [req.userId], (err, user) => {
       if (err || !user) {
         return res.status(404).json({ success: false, message: 'User not found' });
       }
@@ -46,7 +46,7 @@ module.exports = (io) => {
         const candidateName = suffix === 0 ? name : `${name}_${suffix}`;
         
         db.get(
-          'SELECT id FROM users WHERE LOWER(displayName) = LOWER(?) AND id != ?',
+          'SELECT identityPublicKey FROM users WHERE LOWER(displayName) = LOWER(?) AND identityPublicKey != ?',
           [candidateName, req.userId],
           (err, row) => {
             if (err) {
@@ -73,7 +73,7 @@ module.exports = (io) => {
       }
 
       db.run(
-        'UPDATE users SET displayName = ? WHERE id = ?',
+        'UPDATE users SET displayName = ? WHERE identityPublicKey = ?',
         [finalName, req.userId],
         function(err) {
           if (err) {
@@ -108,7 +108,7 @@ module.exports = (io) => {
     }
 
     db.run(
-      'UPDATE users SET profilePicture = ? WHERE id = ?',
+      'UPDATE users SET profilePicture = ? WHERE identityPublicKey = ?',
       [profilePicture, req.userId],
       function(err) {
         if (err) {
@@ -139,7 +139,7 @@ module.exports = (io) => {
     }
 
     db.run(
-      'UPDATE users SET nameColor = ? WHERE id = ?',
+      'UPDATE users SET nameColor = ? WHERE identityPublicKey = ?',
       [nameColor, req.userId],
       function(err) {
         if (err) {
@@ -175,7 +175,7 @@ module.exports = (io) => {
     const trimmedBio = bio.slice(0, 500);
 
     db.run(
-      'UPDATE users SET bio = ? WHERE id = ?',
+      'UPDATE users SET bio = ? WHERE identityPublicKey = ?',
       [trimmedBio, req.userId],
       function(err) {
         if (err) {
@@ -193,7 +193,7 @@ module.exports = (io) => {
 
   // Get all users
   router.get('/all', verifyToken, (req, res) => {
-    db.all('SELECT id, username, displayName, isOnline, profilePicture, nameColor, status, bio FROM users WHERE leftServer = 0 ORDER BY username', (err, users) => {
+    db.all('SELECT identityPublicKey as id, username, displayName, isOnline, profilePicture, nameColor, status, bio FROM users WHERE leftServer = 0 ORDER BY username', (err, users) => {
       if (err) {
         return res.status(500).json({ success: false, message: err.message });
       }
@@ -210,7 +210,7 @@ module.exports = (io) => {
   router.delete('/leave', verifyToken, (req, res) => {
     const userId = req.userId;
 
-    db.run('UPDATE users SET leftServer = 1, isOnline = 0 WHERE id = ?', [userId], function(err) {
+    db.run('UPDATE users SET leftServer = 1, isOnline = 0 WHERE identityPublicKey = ?', [userId], function(err) {
       if (err) {
         return res.status(500).json({ success: false, message: err.message });
       }

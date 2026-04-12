@@ -110,11 +110,11 @@ const socketVoiceRooms = new Map(); // key: socketId -> Set<channelId>
 
 // Helper function to broadcast user list
 const broadcastUserList = () => {
-  db.all('SELECT id, username, displayName, status, profilePicture, nameColor, bio FROM users WHERE leftServer = 0 ORDER BY username', (err, users) => {
+  db.all('SELECT identityPublicKey, username, displayName, status, profilePicture, nameColor, bio FROM users WHERE leftServer = 0 ORDER BY username', (err, users) => {
     if (!err && users) {
       const merged = users.map(u => {
-        const state = userStates.get(String(u.id)) || { isMuted: false, isDeafened: false };
-        return { ...u, isMuted: !!state.isMuted, isDeafened: !!state.isDeafened, isOnline: u.status === 'online' || u.status === 'away' };
+        const state = userStates.get(String(u.identityPublicKey)) || { isMuted: false, isDeafened: false };
+        return { ...u, id: u.identityPublicKey, isMuted: !!state.isMuted, isDeafened: !!state.isDeafened, isOnline: u.status === 'online' || u.status === 'away' };
       });
       io.emit('user_list_update', merged);
     }
@@ -139,7 +139,7 @@ const broadcastVoiceRoomMembers = (channelId) => {
 
     // Query display names, profile pictures, name colors, and status from DB
     const placeholders = userIds.map(() => '?').join(',');
-    db.all(`SELECT id, displayName, profilePicture, nameColor, status, username FROM users WHERE id IN (${placeholders})`, userIds, (err, rows) => {
+    db.all(`SELECT identityPublicKey, displayName, profilePicture, nameColor, status, username FROM users WHERE identityPublicKey IN (${placeholders})`, userIds, (err, rows) => {
       if (err) {
         log.error('Failed to fetch voice room members from DB', err);
         io.emit('voice:room-members-update', { channelId, members: userIds.map(id => {
@@ -152,16 +152,16 @@ const broadcastVoiceRoomMembers = (channelId) => {
         return;
       }
       const members = rows.map(r => {
-        const state = userStates.get(String(r.id)) || { isMuted: false, isDeafened: false };
+        const state = userStates.get(String(r.identityPublicKey)) || { isMuted: false, isDeafened: false };
         // Find the socket ID for this user
         let memberSocketId = null;
         for (const sid of clients) {
-          if (connectedUsers.get(sid) === r.id) {
+          if (connectedUsers.get(sid) === r.identityPublicKey) {
             memberSocketId = sid;
             break;
           }
         }
-        return { id: r.id, socketId: memberSocketId, displayName: r.displayName || r.username, profilePicture: r.profilePicture || null, nameColor: r.nameColor || '#b9bbbe', status: r.status || 'online', isMuted: !!state.isMuted, isDeafened: !!state.isDeafened };
+        return { id: r.identityPublicKey, socketId: memberSocketId, displayName: r.displayName || r.username, profilePicture: r.profilePicture || null, nameColor: r.nameColor || '#b9bbbe', status: r.status || 'online', isMuted: !!state.isMuted, isDeafened: !!state.isDeafened };
       });
       // Ensure order alphabetical by displayName
       members.sort((a, b) => (a.displayName || '').localeCompare(b.displayName || ''));
@@ -209,18 +209,18 @@ const sendAllVoiceRoomMembersTo = (targetSocket) => {
           continue;
         }
         const placeholders = userIds.map(() => '?').join(',');
-        db.all(`SELECT id, displayName, profilePicture, nameColor, status, username FROM users WHERE id IN (${placeholders})`, userIds, (err, rows) => {
+        db.all(`SELECT identityPublicKey, displayName, profilePicture, nameColor, status, username FROM users WHERE identityPublicKey IN (${placeholders})`, userIds, (err, rows) => {
           if (err) {
             targetSocket.emit('voice:room-members-update', { channelId, members: userIds.map(id => ({ id, socketId: null, displayName: null, profilePicture: null, nameColor: '#b9bbbe', status: 'online', isMuted: false, isDeafened: false })) });
             return;
           }
           const members = rows.map(r => {
-            const state = userStates.get(String(r.id)) || { isMuted: false, isDeafened: false };
+            const state = userStates.get(String(r.identityPublicKey)) || { isMuted: false, isDeafened: false };
             let memberSocketId = null;
             for (const sid of clients) {
-              if (connectedUsers.get(sid) === r.id) { memberSocketId = sid; break; }
+              if (connectedUsers.get(sid) === r.identityPublicKey) { memberSocketId = sid; break; }
             }
-            return { id: r.id, socketId: memberSocketId, displayName: r.displayName || r.username, profilePicture: r.profilePicture || null, nameColor: r.nameColor || '#b9bbbe', status: r.status || 'online', isMuted: !!state.isMuted, isDeafened: !!state.isDeafened };
+            return { id: r.identityPublicKey, socketId: memberSocketId, displayName: r.displayName || r.username, profilePicture: r.profilePicture || null, nameColor: r.nameColor || '#b9bbbe', status: r.status || 'online', isMuted: !!state.isMuted, isDeafened: !!state.isDeafened };
           });
           members.sort((a, b) => (a.displayName || '').localeCompare(b.displayName || ''));
           targetSocket.emit('voice:room-members-update', { channelId, members });
@@ -278,10 +278,10 @@ io.use((socket, next) => {
     const decoded = jwt.verify(token, JWT_SECRET);
     socket.userId = decoded.userId;
     // Check if this user is banned before allowing the connection
-    db.get('SELECT username FROM users WHERE id = ?', [decoded.userId], (err, user) => {
-      if (err || !user) return next(new Error('User not found'));
-      db.get('SELECT 1 FROM bans WHERE username = ?', [user.username], (_err2, ban) => {
-        if (ban) return next(new Error('You are banned from this server'));
+    db.get('SELECT 1 FROM bans WHERE publicKey = ?', [decoded.userId], (_err, ban) => {
+      if (ban) return next(new Error('You are banned from this server'));
+      db.get('SELECT identityPublicKey FROM users WHERE identityPublicKey = ?', [decoded.userId], (err2, user) => {
+        if (err2 || !user) return next(new Error('User not found'));
         next();
       });
     });
@@ -299,7 +299,7 @@ io.on('connection', (socket) => {
   // Always reset mute/deafen state on new connection so stale state
   // from a previous session doesn't persist.
   userStates.set(String(socket.userId), { isMuted: false, isDeafened: false });
-  db.run("UPDATE users SET status = 'online' WHERE id = ?", [socket.userId], () => {
+  db.run("UPDATE users SET status = 'online' WHERE identityPublicKey = ?", [socket.userId], () => {
     broadcastUserList();
     // Send all current voice room members directly to the newly connected
     // client (unicast) so they can see who is already in voice channels.
@@ -351,7 +351,7 @@ io.on('connection', (socket) => {
   socket.on('user:set-idle', (data) => {
     const { userId } = data;
     if (!userId) return;
-    db.run("UPDATE users SET status = 'away' WHERE id = ?", [userId], () => {
+    db.run("UPDATE users SET status = 'away' WHERE identityPublicKey = ?", [userId], () => {
       broadcastUserList();
       broadcastAllVoiceRoomMembers();
     });
@@ -360,7 +360,7 @@ io.on('connection', (socket) => {
   socket.on('user:set-active', (data) => {
     const { userId } = data;
     if (!userId) return;
-    db.run("UPDATE users SET status = 'online' WHERE id = ?", [userId], () => {
+    db.run("UPDATE users SET status = 'online' WHERE identityPublicKey = ?", [userId], () => {
       broadcastUserList();
       broadcastAllVoiceRoomMembers();
     });
@@ -458,7 +458,7 @@ io.on('connection', (socket) => {
       socketVoiceRooms.delete(socket.id);
 
       // Update user status in database to offline
-      db.run("UPDATE users SET status = 'offline' WHERE id = ?", [userId], () => {
+      db.run("UPDATE users SET status = 'offline' WHERE identityPublicKey = ?", [userId], () => {
         broadcastUserList();
         // Update all voice rooms the user was in
         for (const channelId of voiceRooms) {
