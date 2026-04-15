@@ -156,6 +156,7 @@ module.exports = (io) => {
     const limit = Math.min(parseInt(req.query.limit) || 50, 100); // Max 100 per request
     const latest = req.query.latest === 'true'; // Load newest or oldest
     const beforeRowId = req.query.beforeRowId; // Use rowid for pagination (more reliable than timestamp)
+    const aroundMessageId = req.query.aroundMessageId; // Load messages centered around a specific message
     
     let query = `SELECT m.rowid, m.id, m.content, m.image, m.createdAt, m.edited_at, m.replyTo, m.signature,
                         u.username, u.displayName, u.identityPublicKey as userId, u.nameColor, u.profilePicture, u.identityPublicKey,
@@ -168,15 +169,85 @@ module.exports = (io) => {
                  WHERE m.channelId = ?`;
     
     const params = [req.params.channelId];
+
+    // "around" mode: find the target message's rowid and load messages centered on it
+    if (aroundMessageId) {
+      db.get('SELECT rowid FROM messages WHERE id = ? AND channelId = ?', [aroundMessageId, req.params.channelId], (err, targetRow) => {
+        if (err || !targetRow) {
+          return res.status(404).json({ success: false, message: 'Target message not found in this channel' });
+        }
+        const halfLimit = Math.floor(limit / 2);
+        const aroundQuery = query + ` AND m.rowid >= ? AND m.rowid <= (SELECT MAX(sub.rowid) FROM (SELECT rowid FROM messages WHERE channelId = ? AND rowid >= ? ORDER BY rowid ASC LIMIT ?) sub) ORDER BY m.rowid ASC`;
+        // Load halfLimit before + halfLimit after the target rowid
+        // First get messages from (targetRowid - halfLimit) to (targetRowid + halfLimit)
+        const beforeQuery = `${query} AND m.rowid <= ? ORDER BY m.rowid DESC LIMIT ?`;
+        const afterQuery = `${query} AND m.rowid > ? ORDER BY m.rowid ASC LIMIT ?`;
+        
+        const beforeParams = [req.params.channelId, targetRow.rowid, halfLimit];
+        const afterParams = [req.params.channelId, targetRow.rowid, halfLimit];
+
+        db.all(beforeQuery, beforeParams, (err1, beforeMsgs) => {
+          if (err1) return res.status(500).json({ success: false, message: err1.message });
+          db.all(afterQuery, afterParams, (err2, afterMsgs) => {
+            if (err2) return res.status(500).json({ success: false, message: err2.message });
+            // afterMsgs fewer than halfLimit means we've reached the channel's latest message
+            const atLatest = (afterMsgs || []).length < halfLimit;
+            // Combine: beforeMsgs is DESC so reverse it, then append afterMsgs
+            let messages = [...(beforeMsgs || []).reverse(), ...(afterMsgs || [])];
+            messages.forEach(decryptMessage);
+            
+            if (messages.length === 0) {
+              return res.json({ success: true, messages });
+            }
+            
+            const messageIds = messages.map(m => m.id);
+            const placeholders = messageIds.map(() => '?').join(',');
+            
+            db.all(
+              `SELECT emoji, messageId, COUNT(*) as count, GROUP_CONCAT(r.userId) as userIds, GROUP_CONCAT(u.displayName) as userNames
+               FROM reactions r
+               JOIN users u ON r.userId = u.identityPublicKey
+               WHERE r.messageId IN (${placeholders})
+               GROUP BY messageId, emoji
+               ORDER BY r.createdAt ASC`,
+              messageIds,
+              (reactErr, reactions) => {
+                if (!reactErr && reactions) {
+                  const reactionsMap = {};
+                  reactions.forEach(r => {
+                    if (!reactionsMap[r.messageId]) reactionsMap[r.messageId] = [];
+                    reactionsMap[r.messageId].push({
+                      emoji: r.emoji, count: r.count,
+                      userIds: r.userIds.split(','), userNames: r.userNames.split(',')
+                    });
+                  });
+                  messages = messages.map(m => ({ ...m, reactions: reactionsMap[m.id] || [] }));
+                } else {
+                  messages = messages.map(m => ({ ...m, reactions: [] }));
+                }
+                res.json({ success: true, messages, atLatest });
+              }
+            );
+          });
+        });
+      });
+      return; // early return — the "around" path handles its own response
+    }
     
     if (beforeRowId) {
       query += ` AND m.rowid < ?`;
       params.push(parseInt(beforeRowId));
     }
+
+    const afterRowId = req.query.afterRowId;
+    if (afterRowId) {
+      query += ` AND m.rowid > ?`;
+      params.push(parseInt(afterRowId));
+    }
     
     // For pagination, always use DESC to get newest messages relative to cursor
     // Then reverse in response if needed
-    const orderBy = 'DESC';
+    const orderBy = afterRowId ? 'ASC' : 'DESC';
     query += ` ORDER BY m.rowid ${orderBy} LIMIT ?`;
     params.push(limit);
     
@@ -184,8 +255,10 @@ module.exports = (io) => {
       if (err) {
         return res.status(500).json({ success: false, message: err.message });
       }
-      // Always reverse to show oldest first in display
-      messages.reverse();
+      // Reverse only when we used DESC ordering (not afterRowId)
+      if (!afterRowId) {
+        messages.reverse();
+      }
 
       // Decrypt message content and images
       messages.forEach(decryptMessage);

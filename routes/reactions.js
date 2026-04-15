@@ -32,11 +32,13 @@ module.exports = (io) => {
       return res.status(400).json({ success: false, message: 'Emoji is required' });
     }
 
-    // Check if message exists
-    db.get('SELECT id FROM messages WHERE id = ?', [messageId], (err, message) => {
+    // Check if message exists and get author info
+    db.get('SELECT id, userId, channelId FROM messages WHERE id = ?', [messageId], (err, message) => {
       if (err || !message) {
         return res.status(404).json({ success: false, message: 'Message not found' });
       }
+
+      const messageOwnerId = message.userId;
 
       // Add reaction (will ignore if already exists due to UNIQUE constraint)
       const reactionId = uuidv4();
@@ -65,7 +67,7 @@ module.exports = (io) => {
                   userIds: r.userIds.split(','),
                   userNames: r.userNames.split(',')
                 }));
-                io.emit('reaction:added', { messageId, reactions: reactionsData });
+                io.emit('reaction:added', { messageId, reactions: reactionsData, reactedByUserId: req.userId, messageOwnerId, channelId: message.channelId });
                 res.json({ success: true, reactions: reactionsData });
               } else {
                 res.json({ success: true });
