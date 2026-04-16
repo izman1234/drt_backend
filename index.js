@@ -504,7 +504,7 @@ serverConsole.start({
 });
 
 // ── Auto-update check ───────────────────────────────────────────────
-// Runs once after startup; respects 24-hour cooldown unless forced.
+// Runs once after startup and then every 24 hours while running.
 if (process.pkg && !process.argv.includes('--no-update')) {
   const forceUpdate = process.argv.includes('--check-updates');
   // Wire the updater's Y/n prompt through the server console's readline
@@ -514,6 +514,13 @@ if (process.pkg && !process.argv.includes('--no-update')) {
   setTimeout(() => {
     updater.checkForUpdates(forceUpdate, { shutdownFn: shutdownServer }).catch(() => {});
   }, 3000);
+
+  // Periodic 24-hour check while the server is running
+  const UPDATE_CHECK_INTERVAL = 24 * 60 * 60 * 1000;
+  setInterval(() => {
+    log.info('Periodic update check (24h interval)...');
+    updater.checkForUpdates(false, { shutdownFn: shutdownServer }).catch(() => {});
+  }, UPDATE_CHECK_INTERVAL);
 }
 
 } // end startServer
