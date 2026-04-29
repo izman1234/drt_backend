@@ -50,6 +50,8 @@ module.exports = (io) => {
             return res.status(500).json({ success: false, message: err.message });
           }
 
+          const reactionAdded = this.changes > 0;
+
           // Fetch updated reactions for the message
           db.all(
             `SELECT emoji, COUNT(*) as count, GROUP_CONCAT(u.identityPublicKey) as userIds, GROUP_CONCAT(u.displayName) as userNames
@@ -67,10 +69,20 @@ module.exports = (io) => {
                   userIds: r.userIds.split(','),
                   userNames: r.userNames.split(',')
                 }));
-                io.emit('reaction:added', { messageId, reactions: reactionsData, reactedByUserId: req.userId, messageOwnerId, channelId: message.channelId });
-                res.json({ success: true, reactions: reactionsData });
+                if (reactionAdded) {
+                  io.emit('reaction:added', {
+                    messageId,
+                    reactions: reactionsData,
+                    reactedByUserId: req.userId,
+                    messageOwnerId,
+                    channelId: message.channelId,
+                    emoji,
+                    reactionAdded,
+                  });
+                }
+                res.json({ success: true, reactions: reactionsData, reactionAdded });
               } else {
-                res.json({ success: true });
+                res.json({ success: true, reactionAdded });
               }
             }
           );
