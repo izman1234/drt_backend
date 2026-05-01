@@ -107,6 +107,154 @@ const connectedUsers = new Map();
 const userStates = new Map(); // key: userId (string) -> { isMuted: bool, isDeafened: bool }
 // Track which voice rooms each socket is in (for reliable disconnect cleanup)
 const socketVoiceRooms = new Map(); // key: socketId -> Set<channelId>
+// Runtime voice media state (not persisted)
+const voiceMediaStates = new Map(); // key: channelId -> Map<userId, { userId, socketId, cameraOn, screenOn }>
+const screenWatchSelections = new Map(); // key: viewer socketId -> { channelId, targetUserId }
+
+const getVoiceRoomName = (channelId) => `voice_${channelId}`;
+
+const getRoomClients = (channelId) => io.sockets.adapter.rooms.get(getVoiceRoomName(channelId)) || new Set();
+
+const socketInVoiceRoom = (socketId, channelId) => getRoomClients(channelId).has(socketId);
+
+const socketsShareVoiceRoom = (socketA, socketB) => {
+  const rooms = socketVoiceRooms.get(socketA) || new Set();
+  for (const channelId of rooms) {
+    if (socketInVoiceRoom(socketB, channelId)) return true;
+  }
+  return false;
+};
+
+const getSocketForUserInVoiceRoom = (channelId, userId) => {
+  const clients = getRoomClients(channelId);
+  for (const sid of clients) {
+    if (String(connectedUsers.get(sid)) === String(userId)) return sid;
+  }
+  return null;
+};
+
+const getMediaStateForUser = (channelId, userId) => {
+  const channelStates = voiceMediaStates.get(String(channelId));
+  const state = channelStates ? channelStates.get(String(userId)) : null;
+  return {
+    cameraOn: !!state?.cameraOn,
+    screenOn: !!state?.screenOn,
+  };
+};
+
+const getVoiceMediaStateSnapshot = (channelId) => {
+  const clients = getRoomClients(channelId);
+  const userIdsInRoom = new Set();
+  for (const sid of clients) {
+    const uid = connectedUsers.get(sid);
+    if (uid) userIdsInRoom.add(String(uid));
+  }
+
+  const channelStates = voiceMediaStates.get(String(channelId)) || new Map();
+  const states = [];
+  for (const [userId, state] of channelStates.entries()) {
+    if (!userIdsInRoom.has(String(userId))) continue;
+    states.push({
+      userId,
+      socketId: state.socketId,
+      cameraOn: !!state.cameraOn,
+      screenOn: !!state.screenOn,
+    });
+  }
+  return states;
+};
+
+const getVoiceRoomMemberContext = (channelId) => {
+  const clients = getRoomClients(channelId);
+  const userIds = [];
+  const socketByUser = new Map();
+
+  for (const sid of clients) {
+    const uid = connectedUsers.get(sid);
+    if (!uid) continue;
+    const key = String(uid);
+    if (socketByUser.has(key)) continue;
+    socketByUser.set(key, sid);
+    userIds.push(uid);
+  }
+
+  return { clients, userIds, socketByUser };
+};
+
+const broadcastVoiceMediaState = (channelId) => {
+  io.emit('voice:media-state:update', {
+    channelId,
+    states: getVoiceMediaStateSnapshot(channelId),
+  });
+};
+
+const setVoiceMediaState = (channelId, userId, socketId, patch) => {
+  const key = String(channelId);
+  if (!voiceMediaStates.has(key)) voiceMediaStates.set(key, new Map());
+  const channelStates = voiceMediaStates.get(key);
+  const prev = channelStates.get(String(userId)) || {
+    userId: String(userId),
+    socketId,
+    cameraOn: false,
+    screenOn: false,
+  };
+  const next = {
+    ...prev,
+    socketId,
+    cameraOn: patch.cameraOn !== undefined ? !!patch.cameraOn : !!prev.cameraOn,
+    screenOn: patch.screenOn !== undefined ? !!patch.screenOn : !!prev.screenOn,
+  };
+  channelStates.set(String(userId), next);
+  return next;
+};
+
+const notifyScreenWatchRemoved = (viewerSocketId, channelId, targetUserId) => {
+  const targetSocketId = getSocketForUserInVoiceRoom(channelId, targetUserId);
+  const viewerUserId = connectedUsers.get(viewerSocketId);
+  if (targetSocketId && viewerUserId) {
+    io.to(targetSocketId).emit('voice:screen-watch:viewer-removed', {
+      channelId,
+      viewerSocketId,
+      viewerUserId,
+    });
+  }
+};
+
+const clearScreenWatchSelection = (viewerSocketId) => {
+  const previous = screenWatchSelections.get(viewerSocketId);
+  if (!previous) return;
+  notifyScreenWatchRemoved(viewerSocketId, previous.channelId, previous.targetUserId);
+  screenWatchSelections.delete(viewerSocketId);
+};
+
+const clearVoiceMediaForSocket = (socketId, channelId) => {
+  const userId = connectedUsers.get(socketId);
+  if (!userId) return;
+
+  const channelIds = channelId ? [channelId] : Array.from(socketVoiceRooms.get(socketId) || []);
+  channelIds.forEach((cid) => {
+    const key = String(cid);
+    const channelStates = voiceMediaStates.get(key);
+    if (channelStates) {
+      channelStates.delete(String(userId));
+      if (channelStates.size === 0) voiceMediaStates.delete(key);
+    }
+
+    clearScreenWatchSelection(socketId);
+
+    for (const [viewerSocketId, selection] of Array.from(screenWatchSelections.entries())) {
+      if (String(selection.channelId) === String(cid) && String(selection.targetUserId) === String(userId)) {
+        screenWatchSelections.delete(viewerSocketId);
+        io.to(viewerSocketId).emit('voice:screen-watch:current', {
+          channelId: cid,
+          targetUserId: null,
+        });
+      }
+    }
+
+    broadcastVoiceMediaState(cid);
+  });
+};
 
 // Helper function to broadcast user list
 const broadcastUserList = () => {
@@ -123,49 +271,46 @@ const broadcastUserList = () => {
 
 // Helper to broadcast voice room members for a channel
 const broadcastVoiceRoomMembers = (channelId) => {
-  const room = `voice_${channelId}`;
   try {
-    const clients = io.sockets.adapter.rooms.get(room) || new Set();
-    const userIds = [];
-    for (const sid of clients) {
-      const uid = connectedUsers.get(sid);
-      if (uid) userIds.push(uid);
-    }
+    const { userIds } = getVoiceRoomMemberContext(channelId);
 
     if (userIds.length === 0) {
       io.emit('voice:room-members-update', { channelId, members: [] });
+      broadcastVoiceMediaState(channelId);
       return;
     }
 
     // Query display names, profile pictures, name colors, and status from DB
     const placeholders = userIds.map(() => '?').join(',');
     db.all(`SELECT identityPublicKey, displayName, profilePicture, nameColor, status, username FROM users WHERE identityPublicKey IN (${placeholders})`, userIds, (err, rows) => {
+      const latest = getVoiceRoomMemberContext(channelId);
+      const activeUserIds = new Set(latest.userIds.map(id => String(id)));
+
+      if (latest.userIds.length === 0) {
+        io.emit('voice:room-members-update', { channelId, members: [] });
+        broadcastVoiceMediaState(channelId);
+        return;
+      }
+
       if (err) {
         log.error('Failed to fetch voice room members from DB', err);
-        io.emit('voice:room-members-update', { channelId, members: userIds.map(id => {
-          let memberSocketId = null;
-          for (const sid of clients) {
-            if (connectedUsers.get(sid) === id) { memberSocketId = sid; break; }
-          }
-          return { id, socketId: memberSocketId, displayName: null, profilePicture: null, nameColor: '#b9bbbe', status: 'online', isMuted: false, isDeafened: false };
+        io.emit('voice:room-members-update', { channelId, members: latest.userIds.map(id => {
+          const memberSocketId = latest.socketByUser.get(String(id)) || null;
+          const media = getMediaStateForUser(channelId, id);
+          return { id, socketId: memberSocketId, displayName: null, profilePicture: null, nameColor: '#b9bbbe', status: 'online', isMuted: false, isDeafened: false, cameraOn: media.cameraOn, screenOn: media.screenOn };
         }) });
         return;
       }
-      const members = rows.map(r => {
+      const members = rows.filter(r => activeUserIds.has(String(r.identityPublicKey))).map(r => {
         const state = userStates.get(String(r.identityPublicKey)) || { isMuted: false, isDeafened: false };
-        // Find the socket ID for this user
-        let memberSocketId = null;
-        for (const sid of clients) {
-          if (connectedUsers.get(sid) === r.identityPublicKey) {
-            memberSocketId = sid;
-            break;
-          }
-        }
-        return { id: r.identityPublicKey, socketId: memberSocketId, displayName: r.displayName || r.username, profilePicture: r.profilePicture || null, nameColor: r.nameColor || '#b9bbbe', status: r.status || 'online', isMuted: !!state.isMuted, isDeafened: !!state.isDeafened };
+        const memberSocketId = latest.socketByUser.get(String(r.identityPublicKey)) || null;
+        const media = getMediaStateForUser(channelId, r.identityPublicKey);
+        return { id: r.identityPublicKey, socketId: memberSocketId, displayName: r.displayName || r.username, profilePicture: r.profilePicture || null, nameColor: r.nameColor || '#b9bbbe', status: r.status || 'online', isMuted: !!state.isMuted, isDeafened: !!state.isDeafened, cameraOn: media.cameraOn, screenOn: media.screenOn };
       });
       // Ensure order alphabetical by displayName
       members.sort((a, b) => (a.displayName || '').localeCompare(b.displayName || ''));
       io.emit('voice:room-members-update', { channelId, members });
+      broadcastVoiceMediaState(channelId);
     });
   } catch (e) {
     log.error('Error broadcasting voice room members', e);
@@ -197,33 +342,40 @@ const sendAllVoiceRoomMembersTo = (targetSocket) => {
     for (const roomName of rooms.keys()) {
       if (roomName.startsWith('voice_')) {
         const channelId = roomName.replace('voice_', '');
-        const room = roomName;
-        const clients = io.sockets.adapter.rooms.get(room) || new Set();
-        const userIds = [];
-        for (const sid of clients) {
-          const uid = connectedUsers.get(sid);
-          if (uid) userIds.push(uid);
-        }
+        const { userIds } = getVoiceRoomMemberContext(channelId);
         if (userIds.length === 0) {
           targetSocket.emit('voice:room-members-update', { channelId, members: [] });
+          targetSocket.emit('voice:media-state:update', { channelId, states: [] });
           continue;
         }
         const placeholders = userIds.map(() => '?').join(',');
         db.all(`SELECT identityPublicKey, displayName, profilePicture, nameColor, status, username FROM users WHERE identityPublicKey IN (${placeholders})`, userIds, (err, rows) => {
-          if (err) {
-            targetSocket.emit('voice:room-members-update', { channelId, members: userIds.map(id => ({ id, socketId: null, displayName: null, profilePicture: null, nameColor: '#b9bbbe', status: 'online', isMuted: false, isDeafened: false })) });
+          const latest = getVoiceRoomMemberContext(channelId);
+          const activeUserIds = new Set(latest.userIds.map(id => String(id)));
+
+          if (latest.userIds.length === 0) {
+            targetSocket.emit('voice:room-members-update', { channelId, members: [] });
+            targetSocket.emit('voice:media-state:update', { channelId, states: [] });
             return;
           }
-          const members = rows.map(r => {
+
+          if (err) {
+            targetSocket.emit('voice:room-members-update', { channelId, members: latest.userIds.map(id => {
+              const media = getMediaStateForUser(channelId, id);
+              return { id, socketId: latest.socketByUser.get(String(id)) || null, displayName: null, profilePicture: null, nameColor: '#b9bbbe', status: 'online', isMuted: false, isDeafened: false, cameraOn: media.cameraOn, screenOn: media.screenOn };
+            }) });
+            targetSocket.emit('voice:media-state:update', { channelId, states: getVoiceMediaStateSnapshot(channelId) });
+            return;
+          }
+          const members = rows.filter(r => activeUserIds.has(String(r.identityPublicKey))).map(r => {
             const state = userStates.get(String(r.identityPublicKey)) || { isMuted: false, isDeafened: false };
-            let memberSocketId = null;
-            for (const sid of clients) {
-              if (connectedUsers.get(sid) === r.identityPublicKey) { memberSocketId = sid; break; }
-            }
-            return { id: r.identityPublicKey, socketId: memberSocketId, displayName: r.displayName || r.username, profilePicture: r.profilePicture || null, nameColor: r.nameColor || '#b9bbbe', status: r.status || 'online', isMuted: !!state.isMuted, isDeafened: !!state.isDeafened };
+            const memberSocketId = latest.socketByUser.get(String(r.identityPublicKey)) || null;
+            const media = getMediaStateForUser(channelId, r.identityPublicKey);
+            return { id: r.identityPublicKey, socketId: memberSocketId, displayName: r.displayName || r.username, profilePicture: r.profilePicture || null, nameColor: r.nameColor || '#b9bbbe', status: r.status || 'online', isMuted: !!state.isMuted, isDeafened: !!state.isDeafened, cameraOn: media.cameraOn, screenOn: media.screenOn };
           });
           members.sort((a, b) => (a.displayName || '').localeCompare(b.displayName || ''));
           targetSocket.emit('voice:room-members-update', { channelId, members });
+          targetSocket.emit('voice:media-state:update', { channelId, states: getVoiceMediaStateSnapshot(channelId) });
         });
       }
     }
@@ -368,17 +520,22 @@ io.on('connection', (socket) => {
 
   // Voice signaling handlers (WebRTC signaling using socket.io)
   socket.on('voice:join', (data) => {
-    const { channelId, userId } = data;
-    const room = `voice_${channelId}`;
+    const { channelId, userId, isMuted, isDeafened } = data;
+    const room = getVoiceRoomName(channelId);
     socket.join(room);
 
     // Track voice room membership for reliable disconnect cleanup
     if (!socketVoiceRooms.has(socket.id)) socketVoiceRooms.set(socket.id, new Set());
     socketVoiceRooms.get(socket.id).add(channelId);
 
-    // Reset mute/deafen state on (re)join so it always matches
-    // the frontend's initial state (unmuted, undeafened).
-    userStates.set(String(userId), { isMuted: false, isDeafened: false });
+    if (typeof isMuted === 'boolean' || typeof isDeafened === 'boolean') {
+      const deafened = !!isDeafened;
+      userStates.set(String(socket.userId), {
+        isMuted: deafened || !!isMuted,
+        isDeafened: deafened,
+      });
+    }
+    setVoiceMediaState(channelId, socket.userId, socket.id, { cameraOn: false, screenOn: false });
 
     // Notify existing peers in the room about the new peer
     socket.to(room).emit('voice:peer-joined', { socketId: socket.id, userId });
@@ -398,11 +555,13 @@ io.on('connection', (socket) => {
     }
     // Broadcast updated room member lists to all clients
     broadcastVoiceRoomMembers(channelId);
+    broadcastVoiceMediaState(channelId);
   });
 
   socket.on('voice:leave', (data) => {
     const { channelId } = data;
-    const room = `voice_${channelId}`;
+    const room = getVoiceRoomName(channelId);
+    clearVoiceMediaForSocket(socket.id, channelId);
     socket.leave(room);
     socket.to(room).emit('voice:peer-left', { socketId: socket.id });
 
@@ -414,34 +573,116 @@ io.on('connection', (socket) => {
     broadcastVoiceRoomMembers(channelId);
   });
 
+  socket.on('voice:media-state:set', (data) => {
+    const { channelId, cameraOn, screenOn } = data || {};
+    if (!channelId || !socketInVoiceRoom(socket.id, channelId)) return;
+
+    const prev = getMediaStateForUser(channelId, socket.userId);
+    const next = setVoiceMediaState(channelId, socket.userId, socket.id, { cameraOn, screenOn });
+
+    if (prev.screenOn && !next.screenOn) {
+      for (const [viewerSocketId, selection] of Array.from(screenWatchSelections.entries())) {
+        if (String(selection.channelId) === String(channelId) && String(selection.targetUserId) === String(socket.userId)) {
+          screenWatchSelections.delete(viewerSocketId);
+          io.to(viewerSocketId).emit('voice:screen-watch:current', {
+            channelId,
+            targetUserId: null,
+          });
+        }
+      }
+    }
+
+    broadcastVoiceMediaState(channelId);
+  });
+
+  socket.on('voice:screen-watch:set', (data) => {
+    const { channelId, targetUserId } = data || {};
+    if (!channelId || !socketInVoiceRoom(socket.id, channelId)) return;
+
+    const previous = screenWatchSelections.get(socket.id);
+    if (previous && (String(previous.channelId) !== String(channelId) || String(previous.targetUserId) !== String(targetUserId))) {
+      notifyScreenWatchRemoved(socket.id, previous.channelId, previous.targetUserId);
+      screenWatchSelections.delete(socket.id);
+    }
+
+    if (!targetUserId) {
+      socket.emit('voice:screen-watch:current', { channelId, targetUserId: null });
+      return;
+    }
+
+    const targetSocketId = getSocketForUserInVoiceRoom(channelId, targetUserId);
+    const targetMedia = getMediaStateForUser(channelId, targetUserId);
+    if (!targetSocketId || !targetMedia.screenOn || String(targetUserId) === String(socket.userId)) {
+      if (previous) {
+        notifyScreenWatchRemoved(socket.id, previous.channelId, previous.targetUserId);
+        screenWatchSelections.delete(socket.id);
+      }
+      socket.emit('voice:screen-watch:current', { channelId, targetUserId: null });
+      return;
+    }
+
+    screenWatchSelections.set(socket.id, { channelId, targetUserId: String(targetUserId) });
+    io.to(targetSocketId).emit('voice:screen-watch:viewer-added', {
+      channelId,
+      viewerSocketId: socket.id,
+      viewerUserId: socket.userId,
+    });
+    socket.emit('voice:screen-watch:current', { channelId, targetUserId: String(targetUserId) });
+  });
+
   // Handle speaking status broadcast
   socket.on('voice:speaking-status', (data) => {
     const { userId, isSpeaking, channelId } = data;
     if (channelId) {
-      const room = `voice_${channelId}`;
+      const room = getVoiceRoomName(channelId);
       // Broadcast to other users in the voice channel (exclude sender)
       socket.to(room).emit('voice:speaking-status', { userId, isSpeaking });
     }
   });
 
   socket.on('voice:offer', (data) => {
-    const { target, sdp } = data; // target is socket id
-    if (target) {
-      socket.to(target).emit('voice:offer', { from: socket.id, sdp });
+    const { target, sdp, channelId } = data; // target is socket id
+    const allowed = channelId
+      ? socketInVoiceRoom(socket.id, channelId) && socketInVoiceRoom(target, channelId)
+      : socketsShareVoiceRoom(socket.id, target);
+    if (target && allowed) {
+      socket.to(target).emit('voice:offer', { from: socket.id, sdp, channelId });
     }
   });
 
   socket.on('voice:answer', (data) => {
-    const { target, sdp } = data;
-    if (target) {
-      socket.to(target).emit('voice:answer', { from: socket.id, sdp });
+    const { target, sdp, channelId } = data;
+    const allowed = channelId
+      ? socketInVoiceRoom(socket.id, channelId) && socketInVoiceRoom(target, channelId)
+      : socketsShareVoiceRoom(socket.id, target);
+    if (target && allowed) {
+      socket.to(target).emit('voice:answer', { from: socket.id, sdp, channelId });
     }
   });
 
   socket.on('voice:ice-candidate', (data) => {
-    const { target, candidate } = data;
-    if (target) {
-      socket.to(target).emit('voice:ice-candidate', { from: socket.id, candidate });
+    const { target, candidate, channelId } = data;
+    const allowed = channelId
+      ? socketInVoiceRoom(socket.id, channelId) && socketInVoiceRoom(target, channelId)
+      : socketsShareVoiceRoom(socket.id, target);
+    if (target && allowed) {
+      socket.to(target).emit('voice:ice-candidate', { from: socket.id, candidate, channelId });
+    }
+  });
+
+  socket.on('voice:track-meta', (data) => {
+    const { target, channelId, source, streamId, trackId } = data || {};
+    const allowed = channelId
+      ? socketInVoiceRoom(socket.id, channelId) && socketInVoiceRoom(target, channelId)
+      : socketsShareVoiceRoom(socket.id, target);
+    if (target && allowed && (source === 'camera' || source === 'screen')) {
+      socket.to(target).emit('voice:track-meta', {
+        from: socket.id,
+        channelId,
+        source,
+        streamId,
+        trackId,
+      });
     }
   });
 
@@ -449,6 +690,7 @@ io.on('connection', (socket) => {
     log.info('User disconnected:', socket.id);
     const userId = connectedUsers.get(socket.id);
     if (userId) {
+      clearVoiceMediaForSocket(socket.id);
       connectedUsers.delete(socket.id);
 
       // Collect the voice rooms BEFORE any async work —
