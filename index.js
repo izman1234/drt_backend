@@ -475,7 +475,9 @@ io.on('connection', (socket) => {
 
   // Receive runtime mute/deafen updates from clients
   socket.on('voice:set-muted', (data) => {
-    const { userId, isMuted } = data || {};
+    const { userId: requestedUserId, isMuted } = data || {};
+    if (requestedUserId && String(requestedUserId) !== String(socket.userId)) return;
+    const userId = socket.userId;
     if (!userId) return;
     const prev = userStates.get(String(userId)) || { isMuted: false, isDeafened: false };
     prev.isMuted = !!isMuted;
@@ -486,7 +488,9 @@ io.on('connection', (socket) => {
   });
 
   socket.on('voice:set-deafened', (data) => {
-    const { userId, isDeafened } = data || {};
+    const { userId: requestedUserId, isDeafened } = data || {};
+    if (requestedUserId && String(requestedUserId) !== String(socket.userId)) return;
+    const userId = socket.userId;
     if (!userId) return;
     const prev = userStates.get(String(userId)) || { isMuted: false, isDeafened: false };
     prev.isDeafened = !!isDeafened;
